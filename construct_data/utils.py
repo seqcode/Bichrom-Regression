@@ -277,7 +277,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, nbins, outprefix, reverse=False, numProcessors=1):
+def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_track, nbins, outprefix, reverse=False, numProcessors=1):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -288,7 +288,8 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, nbins, outprefix, 
     chunks = np.array_split(coords, num_chunks)
     get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
-                                                    bigwig_files=chromatin_tracks, reverse=reverse)
+                                                    bigwig_files=chromatin_tracks, tf_track=tf_track,
+                                                    reverse=reverse)
 
     pool = Pool(numProcessors)
     res = pool.starmap_async(get_data_TFRecord_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
@@ -296,10 +297,11 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, nbins, outprefix, 
 
     return res
 
-def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, nbins, reverse=False):
+def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_track, nbins, reverse=False):
 
     genome_pyfasta = pyfasta.Fasta(fasta)
     bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
+    tfbw = pyBigWig.open(tf_track)
 
     # Reference: https://stackoverflow.com/questions/47861084/how-to-store-numpy-arrays-as-tfrecord
     def serialize_array(array):
@@ -338,8 +340,12 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, nbins, reve
                     m = m[::-1] 
                 m_serialized = serialize_array(m)
                 feature_dict[bigwig_files[idx]] = _bytes_feature(m_serialized)
-            # label
             feature_dict["label"] = tf.train.Feature(int64_list=tf.train.Int64List(value=[item.label]))
+            # counts
+            # Jianyu: Instead of labels, here using counts as prediction target
+            target = (np.nan_to_num(tfbw.values(item.chrom, item.start, item.end))
+                                    .sum())
+            feature_dict["target"] = tf.train.Feature(float_list=tf.train.FloatList(value=[target]))
 
             example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
             writer.write(example.SerializeToString())
