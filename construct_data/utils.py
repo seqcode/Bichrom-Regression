@@ -11,6 +11,7 @@ from collections import defaultdict
 from multiprocessing import Pool
 
 import pyfasta
+import pysam
 import pyBigWig
 from pybedtools import Interval, BedTool
 import logging
@@ -277,7 +278,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_track, nbins, outprefix, reverse=False, numProcessors=1):
+def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -288,7 +289,7 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_track, nbins, o
     chunks = np.array_split(coords, num_chunks)
     get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
-                                                    bigwig_files=chromatin_tracks, tf_track=tf_track,
+                                                    bigwig_files=chromatin_tracks, tf_track=tf_bam,
                                                     reverse=reverse)
 
     pool = Pool(numProcessors)
@@ -297,11 +298,11 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_track, nbins, o
 
     return res
 
-def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_track, nbins, reverse=False):
+def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False):
 
     genome_pyfasta = pyfasta.Fasta(fasta)
     bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
-    tfbw = pyBigWig.open(tf_track)
+    tfbam = pysam.AlignmentFile(tf_bam)
 
     # Reference: https://stackoverflow.com/questions/47861084/how-to-store-numpy-arrays-as-tfrecord
     def serialize_array(array):
@@ -327,24 +328,24 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_track, n
             feature_dict["seq"] = _bytes_feature(seq_serialized)
 
             # chromatin track
-            for idx, bigwig in enumerate(bigwigs):
-                try:
+            try:
+                for idx, bigwig in enumerate(bigwigs):
                     m = (np.nan_to_num(bigwig.values(item.chrom, item.start, item.end))
-                                        .reshape((nbins, -1))
-                                        .mean(axis=1, dtype=float))
-                except RuntimeError as e:
-                    logging.warning(e)
-                    logging.warning(f"Skip region: {item}")
-                    continue
-                if reverse:
-                    m = m[::-1] 
-                m_serialized = serialize_array(m)
-                feature_dict[bigwig_files[idx]] = _bytes_feature(m_serialized)
+                                            .reshape((nbins, -1))
+                                            .mean(axis=1, dtype=float))
+                    if reverse:
+                        m = m[::-1] 
+                    m_serialized = serialize_array(m)
+                    feature_dict[bigwig_files[idx]] = _bytes_feature(m_serialized)
+            except RuntimeError as e:
+                logging.warning(e)
+                logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
+                continue
+            # label
             feature_dict["label"] = tf.train.Feature(int64_list=tf.train.Int64List(value=[item.label]))
             # counts
             # Jianyu: Instead of labels, here using counts as prediction target
-            target = (np.nan_to_num(tfbw.values(item.chrom, item.start, item.end))
-                                    .sum())
+            target = tfbam.count(item.chrom, item.start, item.end)
             feature_dict["target"] = tf.train.Feature(float_list=tf.train.FloatList(value=[target]))
 
             example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
