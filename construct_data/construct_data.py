@@ -258,7 +258,7 @@ def main():
                                     to_keep=None,
                                     out_prefix=args.outdir + '/data_train',
                                     chromatin_track_list=args.chromtracks,
-                                    tf_track=args.tftrack,
+                                    tf_bam=args.tfbam,
                                     nbins=args.nbins, p=args.p)
 
     print('Constructing validation data ...')
@@ -270,7 +270,7 @@ def main():
                         to_keep=args.val_chroms,
                         out_prefix=args.outdir + '/data_val',
                         chromatin_track_list=args.chromtracks, 
-                        tf_track=args.tftrack,
+                        tf_bam=args.tfbam,
                         nbins=args.nbins, p=args.p)
 
     print('Constructing test data ...')
@@ -282,7 +282,7 @@ def main():
                         to_keep=args.test_chroms,
                         out_prefix=args.outdir + '/data_test',
                         chromatin_track_list=args.chromtracks, 
-                        tf_track=args.tftrack,
+                        tf_bam=args.tfbam,
                         nbins=args.nbins, p=args.p)
 
     # Produce a default yaml file recording the output

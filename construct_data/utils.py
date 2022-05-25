@@ -289,7 +289,7 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
     chunks = np.array_split(coords, num_chunks)
     get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
-                                                    bigwig_files=chromatin_tracks, tf_track=tf_bam,
+                                                    bigwig_files=chromatin_tracks, tf_bam=tf_bam,
                                                     reverse=reverse)
 
     pool = Pool(numProcessors)
@@ -304,17 +304,6 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
     bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
     tfbam = pysam.AlignmentFile(tf_bam)
 
-    # Reference: https://stackoverflow.com/questions/47861084/how-to-store-numpy-arrays-as-tfrecord
-    def serialize_array(array):
-        array = tf.io.serialize_tensor(array)
-        return array
-
-    def _bytes_feature(value):
-        """Returns a bytes_list from a string / byte."""
-        if isinstance(value, type(tf.constant(0))): # if value ist tensor
-            value = value.numpy() # get value of tensor
-        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
-
     TFRecord_file = outprefix + ".TFRecord"
     with tf.io.TFRecordWriter(TFRecord_file) as writer:
         for item in coords.itertuples():
@@ -324,8 +313,7 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
             seq = genome_pyfasta[item.chrom][int(item.start):int(item.end)]
             if reverse:
                 seq = rev_comp(seq)
-            seq_serialized = serialize_array(dna2onehot(seq))
-            feature_dict["seq"] = _bytes_feature(seq_serialized)
+            feature_dict["seq"] = tf.train.Feature(float_list=tf.train.FloatList(value=dna2onehot(seq).flatten()))
 
             # chromatin track
             try:
@@ -335,8 +323,7 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
                                             .mean(axis=1, dtype=float))
                     if reverse:
                         m = m[::-1] 
-                    m_serialized = serialize_array(m)
-                    feature_dict[bigwig_files[idx]] = _bytes_feature(m_serialized)
+                    feature_dict[bigwig_files[idx]] = tf.train.Feature(float_list=tf.train.FloatList(value=m))
             except RuntimeError as e:
                 logging.warning(e)
                 logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
@@ -366,12 +353,12 @@ def dna2onehot(dnaSeq):
     seqLen = len(dnaSeq)
 
     # initialize the matrix to seqlen x 4
-    seqMatrixs = np.zeros((seqLen,4), dtype=int)
+    seqMatrixs = np.zeros((4, seqLen), dtype=np.float32)
     # change the value to matrix
     dnaSeq = dnaSeq.upper()
-    for j in range(0,seqLen):
+    for j in range(0, seqLen):
         try:
-            seqMatrixs[j, DNA2index[dnaSeq[j]]] = 1
+            seqMatrixs[DNA2index[dnaSeq[j]], j] = 1
         except KeyError as e:
             continue
     return seqMatrixs
