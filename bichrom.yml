@@ -1,17 +1,17 @@
 channels:
   - pytorch
-  - conda-forge
   - bioconda
+  - conda-forge
   - defaults
 dependencies:
-  - python=3.10
-  - yaml
+  - python=3
   - pyyaml
   - matplotlib
+  - seaborn
   - numpy
   - pandas
   - scikit-learn=1.1
-  - scipy=1.7
+  - scipy=1.8
   - pybedtools
   - pybigwig
   - pyfasta
@@ -22,4 +22,6 @@ dependencies:
   - cudatoolkit=11.3
   - pytorch-lightning=1.6
   - jsonargparse
+  - docstring_parser
   - torchmetrics=0.8
+  - tensorflow=2.8
