@@ -17,7 +17,9 @@ https://doi.org/10.1186/s13059-020-02218-6
 We suggest using anaconda to create a virtual environment using the provided YAML configuration file:
 `conda env create -f bichrom.yml`  
 
-**Note**: Now Bichrom supports **MirroredStrategy** to employ multiple gpus for training.
+Then install NVIDIA DALI by:
+
+`pip install --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110`
 
 ## Usage
 
