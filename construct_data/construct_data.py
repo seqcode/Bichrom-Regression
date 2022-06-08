@@ -1,9 +1,11 @@
+import os
 import argparse
 import yaml
 import subprocess
 import numpy as np
 import pandas as pd
 from pybedtools import BedTool
+from subprocess import call
 from sklearn.preprocessing import StandardScaler
 
 import logging
@@ -307,6 +309,19 @@ def main():
                                      'labels': 'labels',
                                      'chromatin_tracks': args.chromtracks,
                                      'TFRecord': TFRecords_test}}
+
+    logging.info("Indexing TFRecord files...")
+    for name, dspath in yml_training_schema.items():
+        tfrecords = dspath['TFRecord']
+        tfrecord_idxs = [i.replace("TFRecord", "idx") for i in tfrecords]
+        tfrecord2idx_script = "tfrecord2idx"
+
+        for index, tfrecord in enumerate(tfrecords):
+            tfrecord_idx = tfrecord_idxs[index]
+            if not os.path.isfile(tfrecord_idx):
+                call([tfrecord2idx_script, tfrecord, tfrecord_idx])
+    
+        dspath['TFRecord_idx'] = tfrecord_idxs
 
     # Note: The x.split('/')[-1].split('.')[0] accounts for input chromatin bigwig files with
     # associated directory paths
