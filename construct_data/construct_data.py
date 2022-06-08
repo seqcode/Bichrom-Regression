@@ -4,6 +4,7 @@ import subprocess
 import numpy as np
 import pandas as pd
 from pybedtools import BedTool
+from sklearn.preprocessing import StandardScaler
 
 import logging
 logging.basicConfig()
@@ -148,16 +149,17 @@ def construct_training_set(genome_sizes_file, genome_fasta_file, peaks_file, bla
 
     # get fasta sequence and chromatin coverage according to the coordinates
     # write TFRecord output
+    chroms_scaler = StandardScaler()
     TFRecord_file_seq_f = utils.get_data_TFRecord(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
                             nbins, outprefix=out_prefix + "_seq_forward" ,reverse=False, numProcessors=p)
     TFRecord_file_seq_r = utils.get_data_TFRecord(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
                             nbins, outprefix=out_prefix + "_seq_reverse",reverse=True, numProcessors=p)
     TFRecord_file_bichrom_f = utils.get_data_TFRecord(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
-                         nbins, outprefix=out_prefix + "_bichrom_forward" ,reverse=False, numProcessors=p)
+                         nbins, outprefix=out_prefix + "_bichrom_forward" ,reverse=False, numProcessors=p, chroms_scaler=chroms_scaler)
     TFRecord_file_bichrom_r = utils.get_data_TFRecord(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
                             nbins, outprefix=out_prefix + "_bichrom_reverse",reverse=True, numProcessors=p)
     
-    return TFRecord_file_seq_f + TFRecord_file_seq_r, TFRecord_file_bichrom_f + TFRecord_file_bichrom_r
+    return TFRecord_file_seq_f + TFRecord_file_seq_r, TFRecord_file_bichrom_f + TFRecord_file_bichrom_r, chroms_scaler
 
 def construct_test_set(genome_sizes_file, genome_fasta_file, peaks_file, blacklist_file, to_keep,
                         window_length, stride, out_prefix, chromatin_track_list, tf_bam, nbins, p=1):
@@ -250,7 +252,8 @@ def main():
     print([x.split('/')[-1].split('.')[0] for x in args.chromtracks])
 
     print('Constructing train data ...')
-    TFRecords_train_seq, TFRecords_train_bichrom = construct_training_set(genome_sizes_file=args.info, genome_fasta_file=args.fa,
+    TFRecords_train_seq, TFRecords_train_bichrom, chroms_scaler = construct_training_set(genome_sizes_file=args.info, 
+                                    genome_fasta_file=args.fa,
                                     peaks_file=args.peaks,
                                     blacklist_file=args.blacklist, window_length=args.len,
                                     acc_regions_file=args.acc_domains,
@@ -293,7 +296,9 @@ def main():
                            'train_bichrom': {'seq': 'seq',
                                      'labels': 'labels',
                                      'chromatin_tracks': args.chromtracks,
-                                     'TFRecord': TFRecords_train_bichrom},
+                                     'TFRecord': TFRecords_train_bichrom,
+                                     'scaler_mean': chroms_scaler.mean_.tolist(),
+                                     'scaler_var': chroms_scaler.var_.tolist()},
                            'val':   {'seq': 'seq',
                                      'labels': 'labels',
                                      'chromatin_tracks': args.chromtracks,

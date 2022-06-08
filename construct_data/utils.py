@@ -2,11 +2,13 @@
 Utilities for iterating constructing data sets and iterating over
 DNA sequence data.
 """
+import os
 import multiprocessing
 import pandas as pd
 import numpy as np
 import functools
 import math
+import logging
 from collections import defaultdict
 from multiprocessing import Pool
 
@@ -14,7 +16,7 @@ import pyfasta
 import pysam
 import pyBigWig
 from pybedtools import Interval, BedTool
-import logging
+from sklearn.preprocessing import StandardScaler
 
 import tensorflow as tf
 
@@ -278,7 +280,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1):
+def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1, chroms_scaler=None):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -287,6 +289,10 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
     # split coordinates and assign chunks to workers
     num_chunks = math.ceil(len(coords) / 7000)
     chunks = np.array_split(coords, num_chunks)
+
+    # freeze the common parameters
+    ## create a scaler to get statistics for normalizing chromatin marks input
+    ## also create a multiprocessing lock
     get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
                                                     bigwig_files=chromatin_tracks, tf_bam=tf_bam,
@@ -296,7 +302,14 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
     res = pool.starmap_async(get_data_TFRecord_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
     res = res.get()
 
-    return res
+    # fit the scaler if provided
+    files = []
+    for file, mss in res:
+        if chroms_scaler: 
+            chroms_scaler.partial_fit(mss)
+        files.append(file)
+
+    return files
 
 def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False):
 
@@ -305,6 +318,7 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
     tfbam = pysam.AlignmentFile(tf_bam)
 
     TFRecord_file = outprefix + ".TFRecord"
+    mss = []
     with tf.io.TFRecordWriter(TFRecord_file) as writer:
         for item in coords.itertuples():
             feature_dict = defaultdict()
@@ -316,6 +330,7 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
             feature_dict["seq"] = tf.train.Feature(float_list=tf.train.FloatList(value=dna2onehot(seq).flatten()))
 
             # chromatin track
+            ms = []
             try:
                 for idx, bigwig in enumerate(bigwigs):
                     m = (np.nan_to_num(bigwig.values(item.chrom, item.start, item.end))
@@ -323,11 +338,14 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
                                             .mean(axis=1, dtype=float))
                     if reverse:
                         m = m[::-1] 
+                    ms.append(m)
                     feature_dict[bigwig_files[idx]] = tf.train.Feature(float_list=tf.train.FloatList(value=m))
             except RuntimeError as e:
                 logging.warning(e)
                 logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
                 continue
+            ms = np.vstack(ms)  # create the chromatin track array, shape (num_tracks, length)
+            mss.append(ms)
             # label
             feature_dict["label"] = tf.train.Feature(int64_list=tf.train.Int64List(value=[item.label]))
             # counts
@@ -339,8 +357,10 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbi
             writer.write(example.SerializeToString())
 
     for bw in bigwigs: bw.close()
-    
-    return TFRecord_file
+
+    mss = np.hstack(mss).T
+
+    return TFRecord_file, mss
 
 def dna2onehot(dnaSeq):
     DNA2index = {
