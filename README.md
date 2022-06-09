@@ -168,9 +168,10 @@ Outputs will be stored under the folder specified by `trainer.logger.save_dir`, 
 
 ### Step 3 - Test Model
 
-**Example**:
 
 Supply the config file and the checkpoint in the output directory of model training to `test` command, as example:
+
+**Example**:
 
 ```
 python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckpt_path lightning_logs/version_0/checkpoints/epoch=11-step=48.ckpt
@@ -181,9 +182,9 @@ Outputs will be stored under the folder specified by `trainer.logger.save_dir`, 
 
 ### Tensorboard visualization
 
-**Example**:
-
 To visualize the metrics, lauch a tensorboard session on the output directory of train/test step
+
+**Example**:
 
 ```
 tensorboard serve --logdir /path/to/output/dir/
