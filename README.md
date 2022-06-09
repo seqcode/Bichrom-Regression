@@ -141,7 +141,7 @@ subcommands:
 
 This is not required, but for consistency and reproducibility, it's highly suggested tuning the parameters in `config.yaml` file, then provide it to the training script. Things you might want to modify include:
 
-  - trainer.logger.save_dir: where tensorboard logger, checkpoint and config will be stored
+  - trainer.logger.save_dir/trainer.logger.version: where tensorboard logger, checkpoint and config will be stored
   - trainer.nodes/trainer.gpus/trainer.strategy: adjust these parameters to fit your machine capacity
   - trainer.precision: use 16 if you want to use half-precision training, this is not default cuz half-precision training could fail sometimes
   - optimizer.lr/optimizer.betas/...: Adam optimizer hyperparameters
@@ -164,18 +164,18 @@ To specify the model and corresponding hyperparameters, add arguments in the fol
 python trainNN/train.py fit --config config.yaml --model Bichrom --model.batch_size 256 --model.conv1d_filter=128 --model.seqonly=true --data.data_config bichrom_out/test1/step1_output/bichrom.yaml
 ```
 
-Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `lightning_logs`(described in `config.yaml`) in this example
+Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `lightning_logs/version_0`(described in `config.yaml`) in this example
 
 ### Step 3 - Test Model
 
 Supply the config file and the checkpoint in the output directory of model training to `test` command, as example:
 
 ```
-python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckpt_path test/lightning_logs/version_1/checkpoints/epoch=11-step=48.ckpt
+python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckpt_path lightning_logs/version_0/checkpoints/epoch=11-step=48.ckpt
  --trainer.logger TensorBoardLogger --trainer.logger.save_dir test_logs/
 ```
 
-Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `test_logs` in this example
+Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `test_logs/version_0` in this example
 
 ## Tensorboard visualization
 
@@ -205,4 +205,6 @@ python trainNN/train.py predict --config lightning_logs/version_1/config.yaml --
  --trainer.logger TensorBoardLogger --trainer.logger.save_dir predict_logs/ --data.pred_bed bichrom_out/test1/step1_output/data_test.bed --data.num_workers 16
 ```
 
-adjust `--data.num_workers` according to your machine capacity (number of processors) to improve performance
+The prediction `model_pred.txt` will be saved under `predict_logs/version_0` directory
+
+> adjust `--data.num_workers` according to your machine capacity (number of processors) to improve performance
