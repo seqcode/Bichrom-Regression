@@ -177,7 +177,7 @@ python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckp
 
 Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `test_logs/version_0` in this example
 
-## Tensorboard visualization
+### Tensorboard visualization
 
 To visualize the metrics, lauch a tensorboard session on the output directory of train/test step
 
@@ -185,7 +185,7 @@ To visualize the metrics, lauch a tensorboard session on the output directory of
 tensorboard serve --logdir /path/to/output/dir/
 ```
 
-## Prediction
+### Prediction
 
 To use the trained model for prediction on new data, supply the config file and checkpoint in the output directory of model training as did for test step, one additional thing to provide is the bed file (`--data.pred_bed`) describing the regions you want to predict on.
 
