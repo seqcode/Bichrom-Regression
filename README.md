@@ -201,7 +201,7 @@ Requirements of bed file columns:
 use model in the following way:
 
 ```
-python trainNN/train.py predict --config lightning_logs/version_1/config.yaml --ckpt_path test/lightning_logs/version_1/checkpoints/epoch=11-step=48.ckpt
+python trainNN/train.py predict --config lightning_logs/version_1/config.yaml --ckpt_path test/lightning_logs/version_0/checkpoints/epoch=11-step=48.ckpt
  --trainer.logger TensorBoardLogger --trainer.logger.save_dir predict_logs/ --data.pred_bed bichrom_out/test1/step1_output/data_test.bed --data.num_workers 16
 ```
 
