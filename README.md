@@ -10,16 +10,12 @@ https://doi.org/10.1186/s13059-020-02218-6
 
 ## Installation and Requirements 
 
-~~**Please Note**: This repository has been updated as of **02/11/2021**. Input file formats have been modified to increase readability.~~
-
-**Please Note**: As of **03/07/2022**, the tensorflow version used by Bichrom has been changed to **2.6.2**, cudatoolkit and cudnn versions are included in `bichrom.yml`.
-
 We suggest using anaconda to create a virtual environment using the provided YAML configuration file:
-`conda env create -f bichrom.yml`  
+`conda env create -f bichrom.yml -n <env_name>`  
 
-Then install NVIDIA DALI by:
+Enter the created environment, then install NVIDIA DALI by:
 
-`pip install --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110`
+`python -m pip install --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110`
 
 ## Usage
 
@@ -102,59 +98,111 @@ construct_data.py will produce train, test and validation datasets in the specif
 This function will also produce a configuration file called **bichrom.yaml**, which can be used as input to run Bichrom. This configuration file stores the paths to the created train, test and validation datasets. 
 
 
-### Step 2 - Train Bichrom
+### Step 2 - Train Model
+
+Model training integrates [Pytorch Lightning CLI interface](https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_cli.html)
 
 ```
-cd trainNN  
 To view help:   
-python run_bichrom.py -h
-usage: run_bichrom.py [-h] -training_schema_yaml TRAINING_SCHEMA_YAML -len LEN
-                      -outdir OUTDIR -nbins NBINS
+python trainNN/train.py -h
+usage: train.py [-h] [-c CONFIG]
+                [--print_config [={comments,skip_null,skip_default}+]]
+                {fit,validate,test,predict,tune} ...
 
-Train and Evaluate Bichrom
+pytorch-lightning trainer command line tool
 
-optional arguments:
-  -h, --help            show this help message and exit
-  -training_schema_yaml TRAINING_SCHEMA_YAML
-                        YAML file with paths to train, test and val data
-  -len LEN              Size of genomic windows
-  -outdir OUTDIR        Output directory
-  -nbins NBINS          Number of bins
+options:
+  -h, --help            Show this help message and exit.
+  -c CONFIG, --config CONFIG
+                        Path to a configuration file in json or
+                        yaml format.
+  --print_config [={comments,skip_null,skip_default}+]
+                        Print configuration and exit.
+
+subcommands:
+  For more details of each subcommand add it as argument
+  followed by --help.
+
+  {fit,validate,test,predict,tune}
+    fit                 Runs the full optimization routine.
+    validate            Perform one evaluation epoch over the
+                        validation set.
+    test                Perform one evaluation epoch over the
+                        test set.
+    predict             Run inference on your data.
+    tune                Runs routines to tune hyperparameters
+                        before training.
 
 ```
   
-**Required arguments**: 
+**Required Arguments**: 
 
-**training_schema_yaml**:  
-This configuration files contains paths to the formatted train, test and validation data. This file will be automatically generated using construct_data.py (**see above - construct_data.py will output bichrom.yaml**).
+**--config**
 
-In order to construct the training data, we implement several sampling strategies including over-sampling the negative training regions from accessible chromatin and from genomic regions flanking the TF binding sites (detailed in the paper). However, if you would like to construct training data using your own strategy, please input a custom configuration file here. More details for custom configuration files can be found at the bottom of the README.  
+This is not required, but for consistency and reproducibility, it's highly suggested tuning the parameters in `config.yaml` file, then provide it to the training script. Things you might want to modify include:
 
-**len**:  
-The size of genomic windows used for training, validation and testing. (Recommended: 500).    
-**nbins**:  
-The number of bins to use for binning the chromatin data.   
-**outdir**:   
-Bichrom's output directory.  
+  - trainer.logger.save_dir: where tensorboard logger, checkpoint and config will be stored
+  - trainer.nodes/trainer.gpus/trainer.strategy: adjust these parameters to fit your machine capacity
+  - trainer.precision: use 16 if you want to use half-precision training, this is not default cuz half-precision training could fail sometimes
+  - optimizer.lr/optimizer.betas/...: Adam optimizer hyperparameters
 
+**--model**
 
-### Step 2 - Description of Bichrom's Output
-Bichrom output directory. 
-  * seqnet: 
-    * records the validation loss and auPRC for each epoch the sequence-only network (Bichrom-SEQ).
-    * stores models (tf.Keras Models) checkpointed after each epoch. 
-    * stores ouput probabilities over the test data for a sequence-only network. 
-  * bichrom: 
-    * records the validation loss and auPRC for each epoch the Bichrom. 
-    * stores models (tf.Keras Models) checkpointed after each epoch. 
-    * stores the Bichrom ouput probabilities over testing data. 
-  * metrics.txt: stores the test auROC and the auPRC for both a sequence-only network and for Bichrom. 
-  * best_model.hdf5: A Bichrom tensorflow.Keras Model (with the highest validation set auPRC)
-  * precision-recall curves for the sequence-only network and Bichrom.
+Pick the model you would like to train, currently there are mainly two model architectures available: [Bichrom, BichromConvDilated], hyperparameters that can be tuned for each model are:
+
+    Bichrom: data_config(Required), batch_size=512, conv1d_filter=256, lstm_out=32, num_dense=1, seqonly=false
   
-~~### Optional: Custom Training Sets and YAML files~~
+    BichromConvDilated: data_config(Required), batch_size=512, conv1d_filter=256, num_dilated=9, seqonly=false
 
-**TODO**: Due to currently Bichrom saving dataset in Tensorflow TFRecord format, a new way of providing custom training set and yaml files will be released.
+To specify the model and corresponding hyperparameters, add arguments in the following way:
 
-### 2-D Bichrom embeddings
-For 2-D latenet embeddings, please refer to the README in the ```Bichrom/latent_embeddings directory```
+    python trainNN/train.py fit --model Bichrom --model.data_config bichrom.yml --model.batch_size 256 --model.conv1d_filter=128 --model.seqonly=true
+    
+**Example**:
+
+```
+python trainNN/train.py fit --config config.yaml --model Bichrom --model.batch_size 256 --model.conv1d_filter=128 --model.seqonly=true --data.data_config bichrom_out/test1/step1_output/bichrom.yaml
+```
+
+Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `lightning_logs`(described in `config.yaml`) in this example
+
+### Step 3 - Test Model
+
+Supply the config file and the checkpoint in the output directory of model training to `test` command, as example:
+
+```
+python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckpt_path test/lightning_logs/version_1/checkpoints/epoch=11-step=48.ckpt
+ --trainer.logger TensorBoardLogger --trainer.logger.save_dir test_logs/
+```
+
+Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `test_logs` in this example
+
+## Tensorboard visualization
+
+To visualize the metrics, lauch a tensorboard session on the output directory of train/test step
+
+```
+tensorboard serve --logdir /path/to/output/dir/
+```
+
+## Prediction
+
+To use the trained model for prediction on new data, supply the config file and checkpoint in the output directory of model training as did for test step, one additional thing to provide is the bed file (`--data.pred_bed`) describing the regions you want to predict on.
+
+Requirements of bed file columns:
+
+- chrom
+- start
+- end
+- name (set as "." if you don't have this info)
+- score (set as "." if you don't have this info)
+- strand (set as "." if you don't have this info)
+
+use model in the following way:
+
+```
+python trainNN/train.py predict --config lightning_logs/version_1/config.yaml --ckpt_path test/lightning_logs/version_1/checkpoints/epoch=11-step=48.ckpt
+ --trainer.logger TensorBoardLogger --trainer.logger.save_dir predict_logs/ --data.pred_bed bichrom_out/test1/step1_output/data_test.bed --data.num_workers 16
+```
+
+adjust `--data.num_workers` according to your machine capacity (number of processors) to improve performance
