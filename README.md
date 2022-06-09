@@ -93,7 +93,7 @@ For an example file, please see: `sample_data/mm10_blacklist.bed`.
 Number of processors, default is 1.    
 It is suggested to provide more cores to speed up training sample preparation
 
-### Step 1 - Output 
+#### Step 1 - Output 
 construct_data.py will produce train, test and validation datasets in the specified output directory.
 This function will also produce a configuration file called **bichrom.yaml**, which can be used as input to run Bichrom. This configuration file stores the paths to the created train, test and validation datasets. 
 
@@ -168,6 +168,8 @@ Outputs will be stored under the folder specified by `trainer.logger.save_dir`, 
 
 ### Step 3 - Test Model
 
+**Example**:
+
 Supply the config file and the checkpoint in the output directory of model training to `test` command, as example:
 
 ```
@@ -178,6 +180,8 @@ python trainNN/train.py test --config lightning_logs/version_1/config.yaml --ckp
 Outputs will be stored under the folder specified by `trainer.logger.save_dir`, which would be `test_logs/version_0` in this example
 
 ### Tensorboard visualization
+
+**Example**:
 
 To visualize the metrics, lauch a tensorboard session on the output directory of train/test step
 
@@ -197,6 +201,8 @@ Requirements of bed file columns:
 - name (set as "." if you don't have this info)
 - score (set as "." if you don't have this info)
 - strand (set as "." if you don't have this info)
+
+**Example**:
 
 use model in the following way:
 
