@@ -18,6 +18,7 @@ from nvidia.dali.plugin.pytorch import DALIGenericIterator, LastBatchPolicy
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from data_module import SeqChromDataModule
 from dali_input import tfrecord_pipeline
 
 # ref: https://stackoverflow.com/questions/44130851/simple-lstm-in-pytorch-with-sequential-module
@@ -42,18 +43,9 @@ class BichromDataLoaderHook(pl.LightningModule):
     1. Dataloader
     2. Hooks
     """
-    def __init__(self, data_config, batch_size=512, target_vlog=True):
+    def __init__(self, data_config, target_vlog=True):
         super().__init__()
-        self.batch_size = batch_size
-        self.target_vlog = target_vlog
 
-        config = yaml.safe_load(open(data_config, "r"))
-        self.train_path = config['train_bichrom']
-        self.val_path = config['val']
-        self.test_path = config['test']
-        self.scaler_means = self.train_path['scaler_mean']
-        self.scaler_vars = self.train_path['scaler_var']
-        
         self.metrics = MetricCollection([MeanSquaredError(), PearsonCorrCoef()])
         self.test_hpmetrics0 = self.metrics.clone(prefix="hp/test_label0_")
         self.test_hpmetrics1 = self.metrics.clone(prefix="hp/test_label1_")
@@ -104,19 +96,41 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
     
+    def predict_step(self, batch, batch_idx):
+        seq, chroms, y = batch
+        y_hat = self(seq, chroms)
+
+        return y_hat
+
+    def on_predict_epoch_end(self, predict_step_outputs):
+        # collect outputs from each batch
+        out_preds = []
+        for outs in predict_step_outputs[0]: 
+            out_preds.append(outs)
+        
+        # gather from ddp processes
+        out_preds = self.all_gather(torch.cat(out_preds))
+
+        # save
+        if self.global_rank == 0:
+            np.savetxt("model_preds.txt", out_preds.cpu().numpy().flatten())
+        print(f"Saved model predictions into model_preds.txt")
+
     def training_epoch_end(self, training_step_outputs):
         # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
-        try:
-            self.train_loader.next()
-        except StopIteration:
-            pass
+        for train_dataloader in self.trainer.train_dataloader.loaders:
+            try:
+                train_dataloader.next()
+            except StopIteration:
+                pass
     
     def validation_epoch_end(self, validation_step_outputs):
         # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
-        try:
-            self.val_loader.next()
-        except StopIteration:
-            pass
+        for val_dataloader in self.trainer.val_dataloaders:
+            try:
+                val_dataloader.next()
+            except StopIteration:
+                pass
 
     def test_epoch_end(self, test_step_outputs):
         # 1. log metrics
@@ -150,63 +164,6 @@ class BichromDataLoaderHook(pl.LightningModule):
                 ax.set_xlim(left=0, right=8)
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
-
-    def prepare_data(self):
-        pass
-    
-    def setup(self, stage=None):
-        device_id = self.local_rank
-        # this is only for Titanv GPU server
-        #device_id = 2 if device_id == 1 else device_id
-        
-        shard_id = self.global_rank
-        num_shards = self.trainer.world_size
-        print(f"local rank {self.local_rank}, device module is on {self.device}, global rank {self.global_rank} in world {num_shards}")
-
-        data_keys = OrderedDict([
-            ('seq', True),
-            ('chroms', True),
-            ('target', True),
-            ('label', True)
-        ])
-
-        train_pipes = [tfrecord_pipeline(self.train_path, batch_size=int(self.batch_size/num_shards), 
-                    device='gpu', num_threads=12, device_id=device_id, shard_id=shard_id, num_shards=num_shards, 
-                    random_shuffle=True, reader_name="train", scaler_means=self.scaler_means, scaler_vars=self.scaler_vars, target_vlog=self.target_vlog, **data_keys)]
-        val_pipes = [tfrecord_pipeline(self.val_path, batch_size=int(self.batch_size/num_shards), 
-                    device='gpu', num_threads=12, device_id=device_id, shard_id=shard_id, num_shards=num_shards, 
-                    random_shuffle=True, reader_name="val", scaler_means=self.scaler_means, scaler_vars=self.scaler_vars, target_vlog=self.target_vlog, **data_keys)]
-        test_pipes = [tfrecord_pipeline(self.test_path, batch_size=int(self.batch_size/num_shards), 
-                    device='gpu', num_threads=12, device_id=device_id, shard_id=shard_id, num_shards=num_shards, 
-                    random_shuffle=True, reader_name="test", scaler_means=self.scaler_means, scaler_vars=self.scaler_vars, target_vlog=self.target_vlog, **data_keys)]
-        for pipe in train_pipes: pipe.build()
-        for pipe in val_pipes: pipe.build()
-        for pipe in test_pipes: pipe.build()
-
-        class LightningWrapper(DALIGenericIterator):
-            def __init__(self, *kargs, **kvargs):
-                super().__init__(*kargs, **kvargs)
-
-            def __next__(self):
-                out = super().__next__()
-                # DDP is used so only one pipeline per process
-                # also we need to transform dict returned by DALIClassificationIterator to iterable
-                # and squeeze the lables
-                out = out[0]
-                return [out[k] for k in self.output_map]
-                
-        self.train_loader = LightningWrapper(train_pipes, list(data_keys.keys()), reader_name='train', auto_reset=True)
-        self.val_loader = LightningWrapper(val_pipes, list(data_keys.keys()), reader_name='val', auto_reset=True)
-        self.test_loader = LightningWrapper(test_pipes, list(data_keys.keys()), reader_name='test', auto_reset=True)
-    
-    def train_dataloader(self):
-        return self.train_loader
-
-    def val_dataloader(self):
-        return self.val_loader
-
-    def test_dataloader(self):
-        return self.test_loader
 
 @pl_cli.MODEL_REGISTRY    
 class BichromSeqOnly(BichromDataLoaderHook):
