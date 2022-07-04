@@ -113,7 +113,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         # save
         if self.global_rank == 0:
-            np.savetxt("model_preds.txt", out_preds.cpu().numpy().flatten())
+            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten())
         print(f"Saved model predictions into model_preds.txt")
 
     def training_epoch_end(self, training_step_outputs):
@@ -401,6 +401,69 @@ class BichromNoLSTM(BichromDataLoaderHook):
             dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
                                                     (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
                                                     (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        if self.num_conv > 0: y_hat = self.model_conv_repeat(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+@pl_cli.MODEL_REGISTRY
+class ConvRepeat(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=4, num_dense=3, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_conv = num_conv
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv1', nn.Conv1d(4 if self.seqonly else 4 + self.chroms_channel, self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        conv_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_conv+1):
+            conv_repeat_dict[f"conv_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                                (f'conv1d_repeat_{i}', nn.Conv1d(self.conv1d_filter, self.conv1d_filter, 25, padding=12, bias=False)),
+                                                                (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                                (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.conv1d_filter))
+                                                                ]))
+        self.model_conv_repeat = nn.Sequential(conv_repeat_dict)
+        self.model_body = nn.Sequential(OrderedDict([
+            ('globalAvgPool1D', nn.AvgPool1d(476)),
+            ('squeeze', squeeze()),
+            ('dense_aug', nn.Linear(self.conv1d_filter, self.dense_aug_feature)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.dense_aug_feature)),
                                                     (f'dropout_repeat_{i}', nn.Dropout(0.5))
                                                     ]))
         self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
