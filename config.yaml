@@ -3,7 +3,7 @@ trainer:
   logger:
     - class_path: pytorch_lightning.loggers.TensorBoardLogger
       init_args:
-        save_dir: test/
+        save_dir: lightning_logs/
         log_graph: true
   checkpoint_callback: null
   enable_checkpointing: true
