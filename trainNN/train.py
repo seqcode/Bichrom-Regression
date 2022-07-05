@@ -490,7 +490,7 @@ class MyLightningCLI(LightningCLI):
         parser.add_optimizer_args(torch.optim.Adam)
 
 def main():
-    cli = MyLightningCLI(save_config_overwrite=True)
+    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,save_config_overwrite=True)
 
 if __name__ == "__main__":
     main()
