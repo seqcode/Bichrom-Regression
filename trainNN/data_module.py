@@ -117,13 +117,11 @@ class SeqChromDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         if stage in ["fit", "validate", "test", "None"]:
-            device_id = self.trainer.local_rank
-            # this is only for Titanv GPU server
-            #device_id = 2 if device_id == 1 else device_id
+            device_id = self.trainer.device_ids[self.trainer.local_rank]
         
             shard_id = self.trainer.global_rank
             num_shards = self.trainer.world_size
-            print(f"local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {num_shards}")
+            print(f"device id {device_id}, local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {num_shards}")
 
             data_keys = OrderedDict([
                 ('seq', True),
