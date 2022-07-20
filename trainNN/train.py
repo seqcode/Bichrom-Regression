@@ -97,7 +97,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
     
     def predict_step(self, batch, batch_idx):
-        seq, chroms, y = batch
+        seq, chroms = batch
         y_hat = self(seq, chroms)
 
         return y_hat
@@ -113,7 +113,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         # save
         if self.global_rank == 0:
-            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten())
+            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
         print(f"Saved model predictions into model_preds.txt")
 
     def training_epoch_end(self, training_step_outputs):
