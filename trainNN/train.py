@@ -165,42 +165,6 @@ class BichromDataLoaderHook(pl.LightningModule):
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
-@pl_cli.MODEL_REGISTRY    
-class BichromSeqOnly(BichromDataLoaderHook):
-    def __init__(self, data_config, batch_size=512, num_dense=1):
-        print(f"BE ADVISED: You are using Seq-Only model")
-        super().__init__(data_config, batch_size)
-        self.num_dense = num_dense
-        self.save_hyperparameters()
-        
-        self.model_foot = nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv1d(4, 256, 24)),
-            ('relu1', nn.ReLU()),
-            ('batchnorm1', nn.BatchNorm1d(256)),
-            ('maxpooling1', nn.MaxPool1d(15, 15)),
-            ('permute2', permute()),
-            ('lstm', nn.LSTM(256, 32, batch_first=True)),
-            ('extrat_tensor', extract_tensor()),
-            ('dense_aug', nn.Linear(32, 512))
-            ]))
-        self.model_dense_repeat = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5)
-        )
-        self.model_head = nn.Sequential(
-            nn.Linear(512, 1),
-            nn.ReLU()
-        )
-
-    def forward(self, seq, chroms):
-        y_hat = self.model_foot(seq)
-        for i in range(self.num_dense):
-            y_hat = self.model_dense_repeat(y_hat)
-        y_hat = self.model_head(y_hat)
-
-        return y_hat
-
 @pl_cli.MODEL_REGISTRY
 class Bichrom(BichromDataLoaderHook):
     """
