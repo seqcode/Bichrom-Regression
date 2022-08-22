@@ -19,7 +19,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from data_module import SeqChromDataModule
-from dali_input import tfrecord_pipeline
 
 # ref: https://stackoverflow.com/questions/44130851/simple-lstm-in-pytorch-with-sequential-module
 class extract_tensor(nn.Module):
@@ -480,6 +479,62 @@ class ConvRepeat(BichromDataLoaderHook):
             y_hat = torch.cat([seq, chroms], dim=1)
         y_hat = self.model_foot(y_hat)
         if self.num_conv > 0: y_hat = self.model_conv_repeat(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+@pl_cli.MODEL_REGISTRY
+class LSTMRepeat(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_lstm=1, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.num_lstm = num_lstm
+        self.lstm_out = lstm_out
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv_chrom1', nn.Conv1d(4 if seqonly else (4 + self.chroms_channel), self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        self.model_body = nn.Sequential(OrderedDict([
+            ('permute0', permute()),
+            ('lstm', nn.LSTM(self.conv1d_filter, self.lstm_out, num_layers=self.num_lstm, batch_first=True)),
+            ('extrat_tensor0', extract_tensor()),
+            ('dense_aug', nn.Linear(self.lstm_out, self.dense_aug_feature)),
+            ('relu_aug', nn.LeakyReLU()),
+            ('batchnorm_aug', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.dense_aug_feature)),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
         y_hat = self.model_body(y_hat)
         if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
         y_hat = self.model_head(y_hat)
