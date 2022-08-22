@@ -162,6 +162,7 @@ class BichromDataLoaderHook(pl.LightningModule):
                 fig = plt.figure(figsize=(12, 12))
                 ax = sns.scatterplot(x=out_preds[out_labels==l], y=out_trues[out_labels==l])
                 ax.set_xlim(left=0, right=8)
+                ax.set_ylim(bottom=0, top=12)
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
