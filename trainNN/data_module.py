@@ -35,7 +35,7 @@ class DNA2OneHot(object):
     def __call__(self, dnaSeq):
         seqLen = len(dnaSeq)
         # initialize the matrix as 4 x len(dnaSeq)
-        seqMatrix = np.zeros((4, len(dnaSeq)), dtype=int)
+        seqMatrix = np.zeros((4, len(dnaSeq)), dtype=np.float32)
         # change the value to matrix
         dnaSeq = dnaSeq.upper()
         for j in range(0, seqLen):
@@ -61,7 +61,7 @@ class SeqChromDataset(Dataset):
     
     def initialize(self):
         self.genome_pyfasta = pyfasta.Fasta(self.config["train_bichrom"]["fasta"])
-        self.tfbam = pysam.AlignmentFile(self.config["train_bichrom"]["tf_bam"])
+        #self.tfbam = pysam.AlignmentFile(self.config["train_bichrom"]["tf_bam"])
         self.bigwigs = [pyBigWig.open(bw) for bw in self.bigwig_files]
     
     def __len__(self):
@@ -88,9 +88,9 @@ class SeqChromDataset(Dataset):
             raise Exception(f"Failed to extract chromatin {self.bigwig_files[idx]} information in region {entry}")
         ms = np.vstack(ms)
         ## target: read count in region
-        target = self.tfbam.count(entry.chrom, entry.start, entry.end)
+        #target = self.tfbam.count(entry.chrom, entry.start, entry.end)
 
-        return seq, ms, target
+        return seq, ms
 
     def rev_comp(self, inp_str):
         rc_dict = {'A': 'T', 'G': 'C', 'T': 'A', 'C': 'G', 'c': 'g',
@@ -117,13 +117,11 @@ class SeqChromDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         if stage in ["fit", "validate", "test", "None"]:
-            device_id = self.trainer.local_rank
-            # this is only for Titanv GPU server
-            #device_id = 2 if device_id == 1 else device_id
+            device_id = self.trainer.device_ids[self.trainer.local_rank]
         
             shard_id = self.trainer.global_rank
             num_shards = self.trainer.world_size
-            print(f"local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {num_shards}")
+            print(f"device id {device_id}, local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {num_shards}")
 
             data_keys = OrderedDict([
                 ('seq', True),
@@ -174,7 +172,7 @@ class SeqChromDataModule(pl.LightningDataModule):
         return self.test_loader
     
     def predict_dataloader(self):
-        return DataLoader(self.predict_dataset, batch_size=self.batch_size, num_workers=self.num_workers, worker_init_fn=worker_init_fn)
+        return DataLoader(self.predict_dataset, batch_size=self.batch_size, num_workers=self.num_workers, worker_init_fn=worker_init_fn, prefetch_factor=4)
 
 def worker_init_fn(worker_id):
     worker_info = torch.utils.data.get_worker_info()

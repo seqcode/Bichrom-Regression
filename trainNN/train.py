@@ -19,7 +19,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from data_module import SeqChromDataModule
-from dali_input import tfrecord_pipeline
 
 # ref: https://stackoverflow.com/questions/44130851/simple-lstm-in-pytorch-with-sequential-module
 class extract_tensor(nn.Module):
@@ -97,7 +96,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
     
     def predict_step(self, batch, batch_idx):
-        seq, chroms, y = batch
+        seq, chroms = batch
         y_hat = self(seq, chroms)
 
         return y_hat
@@ -113,7 +112,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         # save
         if self.global_rank == 0:
-            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten())
+            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
         print(f"Saved model predictions into model_preds.txt")
 
     def training_epoch_end(self, training_step_outputs):
@@ -162,44 +161,9 @@ class BichromDataLoaderHook(pl.LightningModule):
                 fig = plt.figure(figsize=(12, 12))
                 ax = sns.scatterplot(x=out_preds[out_labels==l], y=out_trues[out_labels==l])
                 ax.set_xlim(left=0, right=8)
+                ax.set_ylim(bottom=0, top=12)
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
-
-@pl_cli.MODEL_REGISTRY    
-class BichromSeqOnly(BichromDataLoaderHook):
-    def __init__(self, data_config, batch_size=512, num_dense=1):
-        print(f"BE ADVISED: You are using Seq-Only model")
-        super().__init__(data_config, batch_size)
-        self.num_dense = num_dense
-        self.save_hyperparameters()
-        
-        self.model_foot = nn.Sequential(OrderedDict([
-            ('conv1', nn.Conv1d(4, 256, 24)),
-            ('relu1', nn.ReLU()),
-            ('batchnorm1', nn.BatchNorm1d(256)),
-            ('maxpooling1', nn.MaxPool1d(15, 15)),
-            ('permute2', permute()),
-            ('lstm', nn.LSTM(256, 32, batch_first=True)),
-            ('extrat_tensor', extract_tensor()),
-            ('dense_aug', nn.Linear(32, 512))
-            ]))
-        self.model_dense_repeat = nn.Sequential(
-            nn.Linear(512, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5)
-        )
-        self.model_head = nn.Sequential(
-            nn.Linear(512, 1),
-            nn.ReLU()
-        )
-
-    def forward(self, seq, chroms):
-        y_hat = self.model_foot(seq)
-        for i in range(self.num_dense):
-            y_hat = self.model_dense_repeat(y_hat)
-        y_hat = self.model_head(y_hat)
-
-        return y_hat
 
 @pl_cli.MODEL_REGISTRY
 class Bichrom(BichromDataLoaderHook):
@@ -485,12 +449,68 @@ class ConvRepeat(BichromDataLoaderHook):
 
         return y_hat
 
+@pl_cli.MODEL_REGISTRY
+class LSTMRepeat(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_lstm=1, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.num_lstm = num_lstm
+        self.lstm_out = lstm_out
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv_chrom1', nn.Conv1d(4 if seqonly else (4 + self.chroms_channel), self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        self.model_body = nn.Sequential(OrderedDict([
+            ('permute0', permute()),
+            ('lstm', nn.LSTM(self.conv1d_filter, self.lstm_out, num_layers=self.num_lstm, batch_first=True)),
+            ('extrat_tensor0', extract_tensor()),
+            ('dense_aug', nn.Linear(self.lstm_out, self.dense_aug_feature)),
+            ('relu_aug', nn.LeakyReLU()),
+            ('batchnorm_aug', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.dense_aug_feature)),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
 class MyLightningCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
         parser.add_optimizer_args(torch.optim.Adam)
 
 def main():
-    cli = MyLightningCLI(save_config_overwrite=True)
+    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,save_config_overwrite=True)
 
 if __name__ == "__main__":
     main()
