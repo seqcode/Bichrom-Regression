@@ -131,7 +131,7 @@ def define_training_coordinates(chip_coords: pd.DataFrame, genome_sizes_file: st
     return training_coords_seq, training_coords_bichrom
 
 def construct_training_set(genome_sizes_file, genome_fasta_file, peaks_file, blacklist_file, to_keep, to_filter,
-                            window_length, acc_regions_file, out_prefix, chromatin_track_list, tf_bam, nbins, p=1):
+                            window_length, acc_regions_file, out_prefix, chromatin_track_list, tf_bam, nbins, augment_factor=5, p=1):
 
     # prepare files for defining coordiantes
     curr_genome_bdt = utils.get_genome_sizes(genome_sizes_file, to_keep=to_keep, to_filter=to_filter)
@@ -145,7 +145,7 @@ def construct_training_set(genome_sizes_file, genome_fasta_file, peaks_file, bla
 
     # get the coordinates for training samples
     train_coords_seq, train_coords_bichrom = define_training_coordinates(chip_seq_coordinates, genome_sizes_file, acc_bdt, curr_genome_bdt,
-                                blacklist_bdt, window_length, len(chip_seq_coordinates)*5, [450, -450, 500, -500, 1250, -1250, 1750, -1750], None, None)
+                                blacklist_bdt, window_length, len(chip_seq_coordinates)*augment_factor, [450, -450, 500, -500, 1250, -1250, 1750, -1750], None, None)
     train_coords_seq.to_csv(out_prefix + "_seq.bed", header=False, index=False, sep="\t")
     train_coords_bichrom.to_csv(out_prefix + "_bichrom.bed", header=False, index=False, sep="\t")
 
@@ -211,6 +211,7 @@ def main():
                         required=True)
     parser.add_argument('-nbins', type=int, help='Number of bins for chromatin tracks',
                         required=True)
+    parser.add_argument('-augment', type=int, help='Upsample positive set to AUGMENT times', default=5),
     parser.add_argument('-p', type=int, help='Number of processors', default=1)
 
     parser.add_argument('-blacklist', default=None, help='Optional, blacklist file for the genome of interest')
@@ -264,7 +265,9 @@ def main():
                                     out_prefix=args.outdir + '/data_train',
                                     chromatin_track_list=args.chromtracks,
                                     tf_bam=args.tfbam,
-                                    nbins=args.nbins, p=args.p)
+                                    nbins=args.nbins, 
+                                    augment_factor=args.augment,
+                                    p=args.p)
 
     print('Constructing validation data ...')
     TFRecords_val = construct_test_set(genome_sizes_file=args.info,
