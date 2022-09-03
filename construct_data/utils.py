@@ -2,18 +2,21 @@
 Utilities for iterating constructing data sets and iterating over
 DNA sequence data.
 """
+import os
 import multiprocessing
 import pandas as pd
 import numpy as np
 import functools
 import math
+import logging
 from collections import defaultdict
 from multiprocessing import Pool
 
 import pyfasta
+import pysam
 import pyBigWig
 from pybedtools import Interval, BedTool
-import logging
+from sklearn.preprocessing import StandardScaler
 
 import tensorflow as tf
 
@@ -277,7 +280,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, nbins, outprefix, reverse=False, numProcessors=1):
+def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1, chroms_scaler=None):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -286,33 +289,36 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, nbins, outprefix, 
     # split coordinates and assign chunks to workers
     num_chunks = math.ceil(len(coords) / 7000)
     chunks = np.array_split(coords, num_chunks)
+
+    # freeze the common parameters
+    ## create a scaler to get statistics for normalizing chromatin marks input
+    ## also create a multiprocessing lock
     get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
-                                                    bigwig_files=chromatin_tracks, reverse=reverse)
+                                                    bigwig_files=chromatin_tracks, tf_bam=tf_bam,
+                                                    reverse=reverse)
 
     pool = Pool(numProcessors)
     res = pool.starmap_async(get_data_TFRecord_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
     res = res.get()
 
-    return res
+    # fit the scaler if provided
+    files = []
+    for file, mss in res:
+        if chroms_scaler: 
+            chroms_scaler.partial_fit(mss)
+        files.append(file)
 
-def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, nbins, reverse=False):
+    return files
+
+def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False):
 
     genome_pyfasta = pyfasta.Fasta(fasta)
     bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
-
-    # Reference: https://stackoverflow.com/questions/47861084/how-to-store-numpy-arrays-as-tfrecord
-    def serialize_array(array):
-        array = tf.io.serialize_tensor(array)
-        return array
-
-    def _bytes_feature(value):
-        """Returns a bytes_list from a string / byte."""
-        if isinstance(value, type(tf.constant(0))): # if value ist tensor
-            value = value.numpy() # get value of tensor
-        return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+    tfbam = pysam.AlignmentFile(tf_bam)
 
     TFRecord_file = outprefix + ".TFRecord"
+    mss = []
     with tf.io.TFRecordWriter(TFRecord_file) as writer:
         for item in coords.itertuples():
             feature_dict = defaultdict()
@@ -321,10 +327,10 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, nbins, reve
             seq = genome_pyfasta[item.chrom][int(item.start):int(item.end)]
             if reverse:
                 seq = rev_comp(seq)
-            seq_serialized = serialize_array(dna2onehot(seq))
-            feature_dict["seq"] = _bytes_feature(seq_serialized)
+            feature_dict["seq"] = tf.train.Feature(float_list=tf.train.FloatList(value=dna2onehot(seq).flatten()))
 
             # chromatin track
+            ms = []
             try:
                 for idx, bigwig in enumerate(bigwigs):
                     m = (np.nan_to_num(bigwig.values(item.chrom, item.start, item.end))
@@ -332,21 +338,29 @@ def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, nbins, reve
                                             .mean(axis=1, dtype=float))
                     if reverse:
                         m = m[::-1] 
-                    m_serialized = serialize_array(m)
-                    feature_dict[bigwig_files[idx]] = _bytes_feature(m_serialized)
+                    ms.append(m)
+                    feature_dict[bigwig_files[idx]] = tf.train.Feature(float_list=tf.train.FloatList(value=m))
             except RuntimeError as e:
                 logging.warning(e)
                 logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
                 continue
+            ms = np.vstack(ms)  # create the chromatin track array, shape (num_tracks, length)
+            mss.append(ms)
             # label
             feature_dict["label"] = tf.train.Feature(int64_list=tf.train.Int64List(value=[item.label]))
+            # counts
+            # Jianyu: Instead of labels, here using counts as prediction target
+            target = tfbam.count(item.chrom, item.start, item.end)
+            feature_dict["target"] = tf.train.Feature(float_list=tf.train.FloatList(value=[target]))
 
             example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
             writer.write(example.SerializeToString())
 
     for bw in bigwigs: bw.close()
-    
-    return TFRecord_file
+
+    mss = np.hstack(mss).T
+
+    return TFRecord_file, mss
 
 def dna2onehot(dnaSeq):
     DNA2index = {
@@ -359,12 +373,12 @@ def dna2onehot(dnaSeq):
     seqLen = len(dnaSeq)
 
     # initialize the matrix to seqlen x 4
-    seqMatrixs = np.zeros((seqLen,4), dtype=int)
+    seqMatrixs = np.zeros((4, seqLen), dtype=np.float32)
     # change the value to matrix
     dnaSeq = dnaSeq.upper()
-    for j in range(0,seqLen):
+    for j in range(0, seqLen):
         try:
-            seqMatrixs[j, DNA2index[dnaSeq[j]]] = 1
+            seqMatrixs[DNA2index[dnaSeq[j]], j] = 1
         except KeyError as e:
             continue
     return seqMatrixs

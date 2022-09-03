@@ -1,119 +1,516 @@
-import argparse
-from json import load
-import numpy as np
+
+import os
 import yaml
-from subprocess import call
-from tensorflow.keras.models import load_model
+from collections import OrderedDict
 
-from train_seq import build_and_train_net
-from train_sc import transfer_and_train_msc
-from scan_genome import evaluate_models
+import numpy as np
+from scipy.stats import pearsonr
 
+import torch
+from torch import nn
+import torch.nn.functional as F
+from torchmetrics import MetricCollection, MeanSquaredError, PearsonCorrCoef
+from pytorch_lightning.utilities import cli as pl_cli
+from pytorch_lightning.utilities.cli import LightningCLI
+import pytorch_lightning as pl
+from nvidia.dali.plugin.pytorch import DALIGenericIterator, LastBatchPolicy
 
-class Params:
-    def __init__(self):
-        self.batchsize = 512
-        self.dense_layers = 3
-        self.n_filters = 256
-        self.filter_size = 24
-        self.pooling_size = 15
-        self.pooling_stride = 15
-        self.dropout = 0.5
-        self.dense_layer_size = 512
+import matplotlib.pyplot as plt
+import seaborn as sns
 
+from data_module import SeqChromDataModule
 
-def return_best_model(pr_vec, model_path):
-    # return the model with the lowest validation LOSS
-    model_idx = np.argmax(pr_vec)
-    # define the model path (The model files are 1-based)
-    model_file = model_path + 'model_epoch' + str(model_idx + 1) + '.hdf5'
-    # load and return the selected model:
-    return model_file
+# ref: https://stackoverflow.com/questions/44130851/simple-lstm-in-pytorch-with-sequential-module
+class extract_tensor(nn.Module):
+    def forward(self,x):
+        # Output shape (batch, features, hidden)
+        tensor, _ = x
+        # Reshape shape (batch, hidden)
+        return tensor[:, -1, :]
+    
+class permute(nn.Module):
+    def forward(self,x):
+        return torch.permute(x, (0, 2, 1))
 
+class squeeze(nn.Module):
+    def forward(self, x):
+        return torch.squeeze(x)
 
-def run_seq_network(train_path, val_path, records_path, seq_len):
+class BichromDataLoaderHook(pl.LightningModule):
     """
-    Train M-SEQ. (Model Definition in README)
-    Parameters:
-        train_path (str): Path to the training data.
-        val_path (str): Path to the validation data
-        records_path (str): Directory & prefix for output directory
-    Returns:
-        M-SEQ model (Model): A keras model
+    Define universal things:
+    1. Dataloader
+    2. Hooks
     """
-    # Create an output directory for saving models + per-epoch logs.
-    records_path_seq = records_path + '/seqnet/'
-    call(['mkdir', records_path_seq])
+    def __init__(self, data_config, target_vlog=True):
+        super().__init__()
 
-    # current hyper-parameters
-    curr_params = Params()
+        self.metrics = MetricCollection([MeanSquaredError(), PearsonCorrCoef()])
+        self.test_hpmetrics0 = self.metrics.clone(prefix="hp/test_label0_")
+        self.test_hpmetrics1 = self.metrics.clone(prefix="hp/test_label1_")
 
-    # train the network
-    loss, seq_val_pr = build_and_train_net(curr_params, train_path, val_path,
-                                           batch_size=curr_params.batchsize,
-                                           records_path=records_path_seq,
-                                           seq_len=seq_len)
-    # choose the model with the lowest validation loss
-    model_seq_path = return_best_model(pr_vec=seq_val_pr, model_path=records_path_seq)
-    return model_seq_path
+        self.example_input_array = [torch.zeros(512, 4, 500).index_fill_(1, torch.tensor(2), 1), torch.ones(512, 12, 500)]
 
+    def vlog(self, tensor):
+        """
+        log(tensor+1) operation
+        """
+        return torch.log(torch.add(tensor, 1))
 
-def run_bimodal_network(train_path, val_path, records_path, base_seq_model_path,
-                        bin_size, seq_len):
+    # Using custom or multiple metrics (default_hp_metric=False)
+    def on_test_start(self):
+        self.logger.log_hyperparams(self.hparams, {i:0 for i in list(self.test_hpmetrics0.keys()) + list(self.test_hpmetrics1.keys())})
+
+    def training_step(self, batch, batch_idx):
+        # define train loop
+        seq, chroms, y, label = batch
+        y_hat = self(seq, chroms)
+
+        # compute prediction and loss
+        loss = F.mse_loss(y_hat, y)
+        self.log('train_loss', loss)
+        return {'loss': loss}
+
+    def validation_step(self, batch, batch_idx):
+        # define validation loop
+        seq, chroms, y, label = batch
+        y_hat = self(seq, chroms)
+
+        # compute prediction and loss
+        val_loss = F.mse_loss(y_hat, y)
+        self.log('val_loss', val_loss)
+        return {'val_loss': val_loss, 'pred': y_hat, 'true': y}
+
+    def test_step(self, batch, batch_idx):
+        # define test
+        seq, chroms, y, label = batch
+        y_hat = self(seq, chroms)
+
+        # compute prediction and loss
+        test_loss = F.mse_loss(y_hat, y)
+
+        # compute metrics
+        if (label==0).sum()>1: self.test_hpmetrics0(y_hat[label==0], y[label==0])
+        if (label==1).sum()>1: self.test_hpmetrics1(y_hat[label==1], y[label==1])
+
+        return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
+    
+    def predict_step(self, batch, batch_idx):
+        seq, chroms = batch
+        y_hat = self(seq, chroms)
+
+        return y_hat
+
+    def on_predict_epoch_end(self, predict_step_outputs):
+        # collect outputs from each batch
+        out_preds = []
+        for outs in predict_step_outputs[0]: 
+            out_preds.append(outs)
+        
+        # gather from ddp processes
+        out_preds = self.all_gather(torch.cat(out_preds))
+
+        # save
+        if self.global_rank == 0:
+            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
+        print(f"Saved model predictions into model_preds.txt")
+
+    def training_epoch_end(self, training_step_outputs):
+        # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
+        for train_dataloader in self.trainer.train_dataloader.loaders:
+            try:
+                train_dataloader.next()
+            except StopIteration:
+                pass
+    
+    def validation_epoch_end(self, validation_step_outputs):
+        # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
+        for val_dataloader in self.trainer.val_dataloaders:
+            try:
+                val_dataloader.next()
+            except StopIteration:
+                pass
+
+    def test_epoch_end(self, test_step_outputs):
+        # 1. log metrics
+        self.logger.log_hyperparams(self.hparams, self.test_hpmetrics0.compute())
+        self.logger.log_hyperparams(self.hparams, self.test_hpmetrics1.compute())
+
+        # 2. plot a scatterplot to show correlation between prediction and target
+        # collect outputs from each batch
+        out_preds = []
+        out_trues = []
+        out_labels = []
+        for outs in test_step_outputs:
+            out_preds.append(outs['pred'])
+            out_trues.append(outs['true'])
+            out_labels.append(outs['label'])
+        
+        # gather from ddp processes
+        out_preds = self.all_gather(torch.stack(out_preds))
+        out_trues = self.all_gather(torch.stack(out_trues))
+        out_labels = self.all_gather(torch.stack(out_labels))
+
+        # plot figure in the main process
+        if self.local_rank == 0: 
+            out_preds = out_preds.detach().cpu().numpy().flatten()
+            out_trues = out_trues.detach().cpu().numpy().flatten()
+            out_labels = out_labels.detach().cpu().numpy().flatten()
+
+            for l in [0, 1]:
+                fig = plt.figure(figsize=(12, 12))
+                ax = sns.scatterplot(x=out_preds[out_labels==l], y=out_trues[out_labels==l])
+                ax.set_xlim(left=0, right=8)
+                ax.set_ylim(bottom=0, top=12)
+                ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
+                self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
+
+@pl_cli.MODEL_REGISTRY
+class Bichrom(BichromDataLoaderHook):
     """
-    Train M-SC. (Model Definition in README)
-    Parameters:
-        train_path (str): Path to the training data.
-        val_path (str): Path to the validation data
-        records_path (str): Directory & prefix for output directory
-        no_of_chrom_tracks (int): Number of prior chromatin sequencing
-        experiments used as input
-        base_seq_model: keras model
-    Returns:
-        M-SC model (keras Model): trained model
+    Early integration of sequence and chromatin info
     """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.lstm_out = lstm_out
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
 
-    # Create an output directory for saving models + per-epoch logs.
-    records_path_sc = records_path + '/bichrom/'
-    call(['mkdir', records_path_sc])
+        if self.seqonly:
+            self.model_foot = nn.Conv1d(4, self.conv1d_filter, 25, bias=False)
+        else:
+            self.model_foot = nn.Conv1d(4 + self.chroms_channel, self.conv1d_filter, 25, bias=False)
+        self.model_body = nn.Sequential(OrderedDict([
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter)),
+            ('maxpooling1', nn.MaxPool1d(15, 15)),
+            ('permute2', permute()),
+            ('lstm', nn.LSTM(self.conv1d_filter, self.lstm_out, batch_first=True)),
+            ('extrat_tensor', extract_tensor()),
+            ('dense_aug', nn.Linear(self.lstm_out, self.dense_aug_feature)),
+            ('relu_aug', nn.LeakyReLU())
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
 
-    curr_params = Params()
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        y_hat = self.model_body(y_hat)
+        y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
 
-    # train the network
-    loss, bimodal_val_pr = transfer_and_train_msc(train_path, val_path,
-                                                  base_seq_model_path,
-                                                  batch_size=curr_params.batchsize,
-                                                  records_path=records_path_sc,
-                                                  bin_size=bin_size,
-                                                  seq_len=seq_len)
+        return y_hat
 
-    # choose the model with the lowest validation loss
-    # loss, bimodal_val_pr = np.loadtxt(records_path_sc + 'trainingLoss.txt')
-    model_sc = return_best_model(pr_vec=bimodal_val_pr, model_path=records_path_sc)
-    return model_sc
+class bpnet_dilation(nn.Module):
+    def __init__(self, channel=64, i=1):
+        super().__init__()
+        self.channel = channel
+        self.i = i
+        
+        self.conv = nn.Conv1d(self.channel, self.channel, 3, padding=2**self.i, dilation=2**self.i)
+        self.relu = nn.LeakyReLU()
 
+    def forward(self,x):
+        conv_x = self.conv(x)
+        conv_x = self.relu(conv_x)
+        return torch.add(x, conv_x)
 
-def train_bichrom(data_paths, outdir, seq_len, bin_size):
-    # Train the sequence-only network (M-SEQ)
-    mseq_path = run_seq_network(train_path=data_paths['train_seq'], val_path=data_paths['val'],
-                           records_path=outdir, seq_len=seq_len)
+@pl_cli.MODEL_REGISTRY
+class BichromConvDilated(BichromDataLoaderHook):
+    """
+    Use dilated convolutional layer instead of LSTM in model body
+    This one follows the BPnet design style, which means dilation_rate increase exponentially by layer
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
+        print(f"BE ADVISED: You are using Dilated model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.conv1d_filter = conv1d_filter
+        self.num_dilated = num_dilated
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
 
-    # Train the bimodal network (M-SC)
-    msc_path = run_bimodal_network(train_path=data_paths['train_bichrom'],
-                              val_path=data_paths['val'], records_path=outdir,
-                              base_seq_model_path=mseq_path, bin_size=bin_size, seq_len=seq_len)
+        if seqonly:
+            self.model_foot = nn.Sequential(OrderedDict([
+                ('conv_chrom1', nn.Conv1d(4, self.conv1d_filter, 25, bias=False)),
+                ('relu1', nn.LeakyReLU()),
+                ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+                ]))
+        else:
+            self.model_foot = nn.Sequential(OrderedDict([
+                ('conv_chrom1', nn.Conv1d(4 + self.chroms_channel, self.conv1d_filter, 25, bias=False)),
+                ('relu1', nn.LeakyReLU()),
+                ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+                ]))
+        dilated_dict = OrderedDict([])
+        for i in range(1, self.num_dilated+1):
+            dilated_dict[f'conv_dilated_{i}'] = bpnet_dilation(self.conv1d_filter, i)
+        self.model_dilated_repeat = nn.Sequential(dilated_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('globalAvgPool1D', nn.AvgPool1d(476)),
+            ('squeeze', squeeze()),
+            ('linear_head', nn.Linear(self.conv1d_filter, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+    
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        y_hat = self.model_dilated_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
 
-    # Evaluate both models on held-out test sets and plot metrics
-    probas_out_seq = outdir + '/seqnet/' + 'test_probs.txt'
-    probas_out_sc = outdir + '/bichrom/' + 'test_probs.txt'
-    records_file_path = outdir + '/metrics'
-    print(records_file_path)
-    # save the best msc model
-    call(['cp', msc_path, outdir + '/full_model.best.hdf5'])
+        return y_hat
 
-    mseq = load_model(mseq_path)
-    msc = load_model(msc_path)
-    evaluate_models(path=data_paths['test'],
-                    probas_out_seq=probas_out_seq, probas_out_sc=probas_out_sc,
-                    model_seq=mseq, model_sc=msc,
-                    records_file_path=records_file_path)
+@pl_cli.MODEL_REGISTRY
+class BichromConvFullDilated(BichromDataLoaderHook):
+    """
+    Use dilated convolutional layer instead of LSTM in model body
+    This one follows the BPnet design style, which means dilation_rate increase exponentially by layer
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
+        print(f"BE ADVISED: You are using Full Receptive field Dilated model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.conv1d_filter = conv1d_filter
+        self.num_dilated = num_dilated
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv_chrom1', nn.Conv1d(4 if seqonly else (4 + self.chroms_channel), self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        dilated_dict = OrderedDict([])
+        for i in range(0, self.num_dilated):
+            dilated_dict[f'conv_dilated_{i}'] = bpnet_dilation(self.conv1d_filter, i)
+        self.model_dilated_repeat = nn.Sequential(dilated_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('globalAvgPool1D', nn.AvgPool1d(476)),
+            ('squeeze', squeeze()),
+            ('linear_head', nn.Linear(self.conv1d_filter, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+    
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        y_hat = self.model_dilated_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+@pl_cli.MODEL_REGISTRY
+class BichromNoLSTM(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=1, num_dense=1, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_conv = num_conv
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv1', nn.Conv1d(4 if self.seqonly else 4 + self.chroms_channel, self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        conv_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_conv+1):
+            conv_repeat_dict[f"conv_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                                (f'conv1d_repeat_{i}', nn.Conv1d(self.conv1d_filter, self.conv1d_filter, 25, padding=12, bias=False)),
+                                                                (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                                (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.conv1d_filter))
+                                                                ]))
+        self.model_conv_repeat = nn.Sequential(conv_repeat_dict)
+        self.model_body = nn.Sequential(OrderedDict([
+            ('globalAvgPool1D', nn.AvgPool1d(476)),
+            ('squeeze', squeeze()),
+            ('dense_aug', nn.Linear(self.conv1d_filter, self.dense_aug_feature)),
+            ('relu1', nn.LeakyReLU()),
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        if self.num_conv > 0: y_hat = self.model_conv_repeat(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+@pl_cli.MODEL_REGISTRY
+class ConvRepeat(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=4, num_dense=3, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_conv = num_conv
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv1', nn.Conv1d(4 if self.seqonly else 4 + self.chroms_channel, self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        conv_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_conv+1):
+            conv_repeat_dict[f"conv_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                                (f'conv1d_repeat_{i}', nn.Conv1d(self.conv1d_filter, self.conv1d_filter, 25, padding=12, bias=False)),
+                                                                (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                                (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.conv1d_filter))
+                                                                ]))
+        self.model_conv_repeat = nn.Sequential(conv_repeat_dict)
+        self.model_body = nn.Sequential(OrderedDict([
+            ('globalAvgPool1D', nn.AvgPool1d(476)),
+            ('squeeze', squeeze()),
+            ('dense_aug', nn.Linear(self.conv1d_filter, self.dense_aug_feature)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.dense_aug_feature)),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        if self.num_conv > 0: y_hat = self.model_conv_repeat(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+@pl_cli.MODEL_REGISTRY
+class LSTMRepeat(BichromDataLoaderHook):
+    """
+    Early integration of sequence and chromatin info
+    """
+    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_lstm=1, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+        print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
+        super().__init__(data_config, batch_size)
+        self.num_dense = num_dense
+        self.conv1d_filter = conv1d_filter
+        self.num_lstm = num_lstm
+        self.lstm_out = lstm_out
+        self.dense_aug_feature = dense_aug_feature
+        self.chroms_channel = chroms_channel
+        self.seqonly = seqonly
+        self.save_hyperparameters()
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv_chrom1', nn.Conv1d(4 if seqonly else (4 + self.chroms_channel), self.conv1d_filter, 25, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+        self.model_body = nn.Sequential(OrderedDict([
+            ('permute0', permute()),
+            ('lstm', nn.LSTM(self.conv1d_filter, self.lstm_out, num_layers=self.num_lstm, batch_first=True)),
+            ('extrat_tensor0', extract_tensor()),
+            ('dense_aug', nn.Linear(self.lstm_out, self.dense_aug_feature)),
+            ('relu_aug', nn.LeakyReLU()),
+            ('batchnorm_aug', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        dense_repeat_dict = OrderedDict([])
+        for i in range(1, self.num_dense+1):
+            dense_repeat_dict[f"dense_repeat_{i}"] = nn.Sequential(OrderedDict([
+                                                    (f'linear_repeat_{i}', nn.Linear(self.dense_aug_feature, self.dense_aug_feature)),
+                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.dense_aug_feature)),
+                                                    (f'dropout_repeat_{i}', nn.Dropout(0.5))
+                                                    ]))
+        self.model_dense_repeat = nn.Sequential(dense_repeat_dict)
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(512, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+
+    def forward(self, seq, chroms):
+        if self.seqonly:
+            y_hat = seq
+        else:
+            y_hat = torch.cat([seq, chroms], dim=1)
+        y_hat = self.model_foot(y_hat)
+        y_hat = self.model_body(y_hat)
+        if self.num_dense > 0: y_hat = self.model_dense_repeat(y_hat)
+        y_hat = self.model_head(y_hat)
+
+        return y_hat
+
+class MyLightningCLI(LightningCLI):
+    def add_arguments_to_parser(self, parser):
+        parser.add_optimizer_args(torch.optim.Adam)
+
+def main():
+    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,save_config_overwrite=True)
+
+if __name__ == "__main__":
+    main()
