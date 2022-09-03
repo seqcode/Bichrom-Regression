@@ -1,10 +1,14 @@
-# Bichrom
+# Bichrom-Regression
+
 Bichrom provides a framework for modeling, interpreting, and visualizing the joint sequence and chromatin landscapes that determine TF-DNA binding dynamics.
+
+**Bichrom-Regression borrowed the project framework from original Bichrom, but working towards a diffferent direction, the purpose is to predict TF binding strength (aka. read counts).**
+
+> **This is still work in progress**
 
 ## Citation
 Srivastava, D., Aydin, B., Mazzoni, E.O. et al. An interpretable bimodal neural network characterizes the sequence and preexisting chromatin predictors of induced transcription factor binding. Genome Biol 22, 20 (2021). 
 https://doi.org/10.1186/s13059-020-02218-6
-
 
 ## Installation and Requirements 
 
