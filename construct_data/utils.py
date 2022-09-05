@@ -338,13 +338,10 @@ def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, n
             for idx, bigwig in enumerate(bigwigs):
                 m = (np.nan_to_num(bigwig.values(item.chrom, item.start, item.end))
                                         .reshape((nbins, -1))
-                                        .mean(axis=1, dtype=float))
+                                        .mean(axis=1, dtype=np.float32))
                 if reverse:
                     m = m[::-1] 
                 ms.append(m)
-                basename = os.path.splitext((os.path.basename(bigwig_files[idx])))[0]
-                #feature_dict[f"{basename}.npy"] = m
-            
         except RuntimeError as e:
             logging.warning(e)
             logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
@@ -353,10 +350,10 @@ def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, n
         feature_dict["chrom.npy"] = ms
         mss.append(ms)
         # label
-        feature_dict["label.npy"] = np.array(item.label)
+        feature_dict["label.npy"] = np.array(item.label, dtype=np.int32)[np.newaxis]
         # counts
         target = tfbam.count(item.chrom, item.start, item.end)
-        feature_dict["target.npy"] = np.array(target)
+        feature_dict["target.npy"] = np.array(target, dtype=np.float32)[np.newaxis]
 
         sink.write(feature_dict)
 
