@@ -152,11 +152,18 @@ class SeqChromDataModule(pl.LightningDataModule):
         pass
 
     def setup(self, stage=None):
-        device_id = self.trainer.device_ids[self.trainer.local_rank]
+        try:
+            device_id = self.trainer.device_ids[self.trainer.local_rank]
         
-        global_rank = self.trainer.global_rank
-        world_size = self.trainer.world_size
-        print(f"device id {device_id}, local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {world_size}")
+            global_rank = self.trainer.global_rank
+            world_size = self.trainer.world_size
+            print(f"device id {device_id}, local rank {self.trainer.local_rank}, global rank {self.trainer.global_rank} in world {world_size}")
+        except AttributeError:
+            print(f"Error when trying to fetch device and rank info")
+            print(f"Assume dataset is being setup without a trainer, set device id as 0, global rank as 0, world size as 1")
+            device_id = 0
+            global_rank = 0
+            world_size = 1
 
         self.batch_size_per_rank = int(self.batch_size/world_size)
 
