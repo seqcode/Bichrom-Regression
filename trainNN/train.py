@@ -10,8 +10,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torchmetrics import MetricCollection, MeanSquaredError, PearsonCorrCoef
-from pytorch_lightning.utilities import cli as pl_cli
 from pytorch_lightning.utilities.cli import LightningCLI
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 import pytorch_lightning as pl
 
 import matplotlib.pyplot as plt
@@ -488,7 +488,15 @@ class MyLightningCLI(LightningCLI):
         parser.add_optimizer_args(torch.optim.Adam)
 
 def main():
-    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,save_config_overwrite=True)
+    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,
+                        seed_everything_default=32,
+                        save_config_overwrite=True,
+                        trainer_defaults={
+                            "callbacks": [
+                                ModelCheckpoint(filename="checkpoint_{epoch}-{val_loss:.6f}", monitor='val_loss', save_last=False, save_top_k=1, mode='min', every_n_epochs=1),
+                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=10),
+                                ModelSummary(max_depth=-1)]
+                        })
 
 if __name__ == "__main__":
     main()
