@@ -204,11 +204,11 @@ class SeqChromDataModule(pl.LightningDataModule):
                 wds.map(target_vlog()),
             )
 
-        if stage == "predict" or stage is None:
+        if (stage == "predict" or stage is None) and (not self.pred_bed is None):
             self.predict_dataset = SeqChromDataset(self.pred_bed, self.config)
     
     def train_dataloader(self):
-        return wds.WebLoader(self.train_loader, num_workers=self.num_workers, batch_size=self.batch_size_per_rank).repeat(2).with_length(ceil(self.train_dataset_size/self.batch_size)) # pad the last batch if there is remainder
+        return wds.WebLoader(self.train_loader, num_workers=self.num_workers, batch_size=self.batch_size_per_rank).repeat(2).with_epoch(ceil(self.train_dataset_size/self.batch_size)) # pad the last batch if there is remainder
 
     def val_dataloader(self):
         return wds.WebLoader(self.val_loader, num_workers=self.num_workers, batch_size=self.batch_size_per_rank)
