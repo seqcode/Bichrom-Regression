@@ -280,7 +280,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1, chroms_scaler=None):
+def get_data_webdataset(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, compress=False, numProcessors=1, chroms_scaler=None):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -296,7 +296,7 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
     get_data_worker_freeze = functools.partial(get_data_webdataset_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
                                                     bigwig_files=chromatin_tracks, tf_bam=tf_bam,
-                                                    reverse=reverse)
+                                                    reverse=reverse, compress=compress)
 
     pool = Pool(numProcessors)
     res = pool.starmap_async(get_data_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
@@ -311,15 +311,15 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
 
     return files
 
-def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False):
+def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False, compress=False):
     # get handlers
     genome_pyfasta = pyfasta.Fasta(fasta)
     bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
     tfbam = pysam.AlignmentFile(tf_bam)
 
     # iterate all records
-    filename = f"{outprefix}.tar"
-    sink = wds.TarWriter(filename)
+    filename = f"{outprefix}.tar.gz" if compress else f"{outprefix}.tar"
+    sink = wds.TarWriter(filename, compress=compress)
     mss = []
     for item in coords.itertuples():
         feature_dict = defaultdict()
