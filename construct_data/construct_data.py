@@ -215,7 +215,7 @@ def main():
 
     parser.add_argument('-p', type=int, help='Number of processors', default=1)
 
-    parser.add_argument('-compress', type=bool, action='store_true', help='Whether compress input datasets', default=False)
+    parser.add_argument('-compress', action='store_true', help='Whether compress input datasets', default=False)
 
     parser.add_argument('-blacklist', default=None, help='Optional, blacklist file for the genome of interest')
 
