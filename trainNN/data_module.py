@@ -134,7 +134,7 @@ def _target_vlog(sample):
 target_vlog = wds.pipelinefilter(_target_vlog)
 
 class SeqChromDataModule(pl.LightningDataModule):
-    def __init__(self, data_config, pred_bed, num_workers=1, batch_size=512):
+    def __init__(self, data_config, pred_bed, num_workers=8, batch_size=512):
         super().__init__()
         self.config = yaml.safe_load(open(data_config, 'r'))
         self.pred_bed = pred_bed
