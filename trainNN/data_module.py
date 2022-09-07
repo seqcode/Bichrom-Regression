@@ -49,12 +49,11 @@ class SeqChromDataset(Dataset):
         self.bed = pd.read_table(bed, header=None, names=['chrom', 'start', 'end', 'name', 'score', 'strand' ])
 
         self.config = config
-        self.nbins = config["train_bichrom"]["nbins"]
         self.seq_transform = seq_transform
 
-        self.bigwig_files = config["train_bichrom"]["chromatin_tracks"]
-        self.scaler_mean = config["train_bichrom"]["scaler_mean"]
-        self.scaler_var = config["train_bichrom"]["scaler_var"]
+        self.bigwig_files = config["params"]["chromatin_tracks"]
+        self.scaler_mean = config["params"]["scaler_mean"]
+        self.scaler_var = config["params"]["scaler_var"]
     
     def initialize(self):
         self.genome_pyfasta = pyfasta.Fasta(self.config["train_bichrom"]["fasta"])
@@ -75,7 +74,7 @@ class SeqChromDataset(Dataset):
         ms = []
         try:
             for idx, bigwig in enumerate(self.bigwigs):
-                m = (np.nan_to_num(bigwig.values(entry.chrom, entry.start, entry.end)).reshape((self.nbins, -1)).mean(axis=1, dtype=np.float32))
+                m = (np.nan_to_num(bigwig.values(entry.chrom, entry.start, entry.end))).astype(np.float32)
                 if entry.strand == "-": m = m[::-1] # reverse if needed
                 if self.scaler_mean and self.scaler_var:
                     m = (m - self.scaler_mean[idx])/sqrt(self.scaler_var[idx])
