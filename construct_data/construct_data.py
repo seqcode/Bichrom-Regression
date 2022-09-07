@@ -1,8 +1,6 @@
-import os
 import argparse
 import yaml
 import subprocess
-import numpy as np
 import pandas as pd
 from pybedtools import BedTool
 from subprocess import call
@@ -132,7 +130,7 @@ def define_training_coordinates(chip_coords: pd.DataFrame, genome_sizes_file: st
     return training_coords_seq, training_coords_bichrom
 
 def construct_training_set(genome_sizes_file, genome_fasta_file, peaks_file, blacklist_file, to_keep, to_filter,
-                            window_length, acc_regions_file, out_prefix, chromatin_track_list, tf_bam, nbins, augment_factor=5, p=1):
+                            window_length, acc_regions_file, out_prefix, chromatin_track_list, tf_bam, nbins, augment_factor=5, p=1, compress=False):
 
     # prepare files for defining coordiantes
     curr_genome_bdt = utils.get_genome_sizes(genome_sizes_file, to_keep=to_keep, to_filter=to_filter)
@@ -147,25 +145,28 @@ def construct_training_set(genome_sizes_file, genome_fasta_file, peaks_file, bla
     # get the coordinates for training samples
     train_coords_seq, train_coords_bichrom = define_training_coordinates(chip_seq_coordinates, genome_sizes_file, acc_bdt, curr_genome_bdt,
                                 blacklist_bdt, window_length, len(chip_seq_coordinates)*augment_factor, [450, -450, 500, -500, 1250, -1250, 1750, -1750], None, None)
-    train_coords_seq.to_csv(out_prefix + "_seq.bed", header=False, index=False, sep="\t")
-    train_coords_bichrom.to_csv(out_prefix + "_bichrom.bed", header=False, index=False, sep="\t")
+    # save coordinates in bed files
+    train_coords_seq_bed = out_prefix + "_seq.bed"
+    train_coords_bichrom_bed = out_prefix + "_bichrom.bed"
+    train_coords_seq.to_csv(train_coords_seq_bed, header=False, index=False, sep="\t")
+    train_coords_bichrom.to_csv(train_coords_bichrom_bed, header=False, index=False, sep="\t")
 
     # get fasta sequence and chromatin coverage according to the coordinates
     # write TFRecord output
     chroms_scaler = StandardScaler()
-    TFRecord_file_seq_f = utils.get_data_TFRecord(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
-                            nbins, outprefix=out_prefix + "_seq_forward" ,reverse=False, numProcessors=p)
-    TFRecord_file_seq_r = utils.get_data_TFRecord(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
-                            nbins, outprefix=out_prefix + "_seq_reverse",reverse=True, numProcessors=p)
-    TFRecord_file_bichrom_f = utils.get_data_TFRecord(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
-                         nbins, outprefix=out_prefix + "_bichrom_forward" ,reverse=False, numProcessors=p, chroms_scaler=chroms_scaler)
-    TFRecord_file_bichrom_r = utils.get_data_TFRecord(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
-                            nbins, outprefix=out_prefix + "_bichrom_reverse",reverse=True, numProcessors=p)
+    wds_file_seq_f = utils.get_data_webdataset(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
+                            nbins, outprefix=out_prefix + "_seq_forward" ,reverse=False, compress=compress, numProcessors=p)
+    wds_file_seq_r = utils.get_data_webdataset(train_coords_seq, genome_fasta_file, chromatin_track_list, tf_bam,
+                            nbins, outprefix=out_prefix + "_seq_reverse",reverse=True, compress=compress, numProcessors=p)
+    wds_file_bichrom_f = utils.get_data_webdataset(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
+                         nbins, outprefix=out_prefix + "_bichrom_forward" ,reverse=False, compress=compress, numProcessors=p, chroms_scaler=chroms_scaler)
+    wds_file_bichrom_r = utils.get_data_webdataset(train_coords_bichrom, genome_fasta_file, chromatin_track_list, tf_bam,
+                            nbins, outprefix=out_prefix + "_bichrom_reverse",reverse=True, compress=compress, numProcessors=p)
     
-    return TFRecord_file_seq_f + TFRecord_file_seq_r, TFRecord_file_bichrom_f + TFRecord_file_bichrom_r, chroms_scaler
+    return wds_file_seq_f + wds_file_seq_r, wds_file_bichrom_f + wds_file_bichrom_r, train_coords_seq_bed, train_coords_bichrom_bed, chroms_scaler
 
 def construct_test_set(genome_sizes_file, genome_fasta_file, peaks_file, blacklist_file, to_keep,
-                        window_length, stride, out_prefix, chromatin_track_list, tf_bam, nbins, p=1):
+                        window_length, stride, out_prefix, chromatin_track_list, tf_bam, nbins, p=1, compress=False):
 
     # prepare file for defining coordinates
     blacklist_bdt = BedTool(blacklist_file)
@@ -183,13 +184,14 @@ def construct_test_set(genome_sizes_file, genome_fasta_file, peaks_file, blackli
                                 .assign(label=0, type="neg_chop"))
     
     test_coords = pd.concat([bound_chip_peaks, unbound_genome_chop])
-    test_coords.to_csv(out_prefix + ".bed", header=False, index=False, sep="\t")
+    test_coords_bed = out_prefix + ".bed"
+    test_coords.to_csv(test_coords_bed, header=False, index=False, sep="\t")
 
     # write TFRecord output
-    TFRecord_file = utils.get_data_TFRecord(test_coords, genome_fasta_file, chromatin_track_list, tf_bam,
-                            nbins, outprefix=out_prefix + "_forward" ,reverse=False, numProcessors=p)    
+    wds_file = utils.get_data_webdataset(test_coords, genome_fasta_file, chromatin_track_list, tf_bam,
+                            nbins, outprefix=out_prefix + "_forward" ,reverse=False, compress=compress, numProcessors=p)    
 
-    return TFRecord_file
+    return wds_file, test_coords_bed
 
 def main():
 
@@ -210,10 +212,11 @@ def main():
                         required=True)
     parser.add_argument('-o', '--outdir', help='Output directory for storing train, test data',
                         required=True)
-    parser.add_argument('-nbins', type=int, help='Number of bins for chromatin tracks',
-                        required=True)
-    parser.add_argument('-augment', type=int, help='Upsample positive set to AUGMENT times', default=5),
+    parser.add_argument('-augment', type=int, help='Upsample positive set to AUGMENT times', default=5)
+
     parser.add_argument('-p', type=int, help='Number of processors', default=1)
+
+    parser.add_argument('-compress', action='store_true', help='Whether compress input datasets', default=False)
 
     parser.add_argument('-blacklist', default=None, help='Optional, blacklist file for the genome of interest')
 
@@ -256,7 +259,7 @@ def main():
     print([x.split('/')[-1].split('.')[0] for x in args.chromtracks])
 
     print('Constructing train data ...')
-    TFRecords_train_seq, TFRecords_train_bichrom, chroms_scaler = construct_training_set(genome_sizes_file=args.info, 
+    wds_train_seq, wds_train_bichrom, train_coords_seq_bed, train_coords_bichrom_bed, chroms_scaler = construct_training_set(genome_sizes_file=args.info, 
                                     genome_fasta_file=args.fa,
                                     peaks_file=args.peaks,
                                     blacklist_file=args.blacklist, window_length=args.len,
@@ -266,12 +269,13 @@ def main():
                                     out_prefix=args.outdir + '/data_train',
                                     chromatin_track_list=args.chromtracks,
                                     tf_bam=args.tfbam,
-                                    nbins=args.nbins, 
+                                    nbins=args.len, 
                                     augment_factor=args.augment,
-                                    p=args.p)
+                                    p=args.p,
+                                    compress=args.compress)
 
     print('Constructing validation data ...')
-    TFRecords_val = construct_test_set(genome_sizes_file=args.info,
+    wds_val, val_coords_bed = construct_test_set(genome_sizes_file=args.info,
                         peaks_file=args.peaks,
                         genome_fasta_file=args.fa,
                         blacklist_file=args.blacklist, window_length=args.len,
@@ -280,10 +284,10 @@ def main():
                         out_prefix=args.outdir + '/data_val',
                         chromatin_track_list=args.chromtracks, 
                         tf_bam=args.tfbam,
-                        nbins=args.nbins, p=args.p)
+                        nbins=args.len, p=args.p, compress=args.compress)
 
     print('Constructing test data ...')
-    TFRecords_test = construct_test_set(genome_sizes_file=args.info,
+    wds_test, test_coords_bed = construct_test_set(genome_sizes_file=args.info,
                         peaks_file=args.peaks,
                         genome_fasta_file=args.fa,
                         blacklist_file=args.blacklist, window_length=args.len,
@@ -292,52 +296,32 @@ def main():
                         out_prefix=args.outdir + '/data_test',
                         chromatin_track_list=args.chromtracks, 
                         tf_bam=args.tfbam,
-                        nbins=args.nbins, p=args.p)
+                        nbins=args.len, p=args.p, compress=args.compress)
 
     # Produce a default yaml file recording the output
-    yml_training_schema = {'train_seq': {'seq': 'seq',
-                                     'labels': 'labels',
+    yml_training_schema = {'params': {
                                      'chromatin_tracks': args.chromtracks,
                                      'tf_bam': args.tfbam,
                                      'fasta': args.fa,
-                                     'nbins': args.nbins,
-                                     'TFRecord': TFRecords_train_seq},
-                           'train_bichrom': {'seq': 'seq',
-                                     'labels': 'labels',
-                                     'chromatin_tracks': args.chromtracks,
-                                     'tf_bam': args.tfbam,
-                                     'fasta': args.fa,
-                                     'nbins': args.nbins,
-                                     'TFRecord': TFRecords_train_bichrom,
                                      'scaler_mean': chroms_scaler.mean_.tolist(),
-                                     'scaler_var': chroms_scaler.var_.tolist()},
-                           'val':   {'seq': 'seq',
-                                     'labels': 'labels',
-                                     'chromatin_tracks': args.chromtracks,
-                                     'tf_bam': args.tfbam,
-                                     'fasta': args.fa,
-                                     'nbins': args.nbins,
-                                     'TFRecord': TFRecords_val},
-                           'test':  {'seq': 'seq',
-                                     'labels': 'labels',
-                                     'chromatin_tracks': args.chromtracks,
-                                     'tf_bam': args.tfbam,
-                                     'fasta': args.fa,
-                                     'nbins': args.nbins,
-                                     'TFRecord': TFRecords_test}}
-
-    logging.info("Indexing TFRecord files...")
-    for name, dspath in yml_training_schema.items():
-        tfrecords = dspath['TFRecord']
-        tfrecord_idxs = [i.replace("TFRecord", "idx") for i in tfrecords]
-        tfrecord2idx_script = "tfrecord2idx"
-
-        for index, tfrecord in enumerate(tfrecords):
-            tfrecord_idx = tfrecord_idxs[index]
-            if not os.path.isfile(tfrecord_idx):
-                call([tfrecord2idx_script, tfrecord, tfrecord_idx])
-    
-        dspath['TFRecord_idx'] = tfrecord_idxs
+                                     'scaler_var': chroms_scaler.var_.tolist()
+                                    },
+                           'train_seq': {
+                                     'bed': train_coords_seq_bed,
+                                     'webdataset': wds_train_seq
+                                    },
+                           'train_bichrom': {
+                                     'bed': train_coords_bichrom_bed,
+                                     'webdataset': wds_train_bichrom
+                                    },
+                           'val':   {
+                                     'bed': val_coords_bed,
+                                     'webdataset': wds_val
+                                    },
+                           'test':  {
+                                     'bed': test_coords_bed,
+                                     'webdataset': wds_test
+                                    }}
 
     # Note: The x.split('/')[-1].split('.')[0] accounts for input chromatin bigwig files with
     # associated directory paths

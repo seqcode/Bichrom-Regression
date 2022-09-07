@@ -10,10 +10,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torchmetrics import MetricCollection, MeanSquaredError, PearsonCorrCoef
-from pytorch_lightning.utilities import cli as pl_cli
 from pytorch_lightning.utilities.cli import LightningCLI
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 import pytorch_lightning as pl
-from nvidia.dali.plugin.pytorch import DALIGenericIterator, LastBatchPolicy
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -42,14 +41,15 @@ class BichromDataLoaderHook(pl.LightningModule):
     1. Dataloader
     2. Hooks
     """
-    def __init__(self, data_config, target_vlog=True):
+    def __init__(self, chroms_channel):
         super().__init__()
+        self.chroms_channel = chroms_channel
 
         self.metrics = MetricCollection([MeanSquaredError(), PearsonCorrCoef()])
         self.test_hpmetrics0 = self.metrics.clone(prefix="hp/test_label0_")
         self.test_hpmetrics1 = self.metrics.clone(prefix="hp/test_label1_")
 
-        self.example_input_array = [torch.zeros(512, 4, 500).index_fill_(1, torch.tensor(2), 1), torch.ones(512, 12, 500)]
+        self.example_input_array = [torch.zeros(512, 4, 500).index_fill_(1, torch.tensor(2), 1), torch.ones(512, self.chroms_channel, 500)]
 
     def vlog(self, tensor):
         """
@@ -115,22 +115,6 @@ class BichromDataLoaderHook(pl.LightningModule):
             np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
         print(f"Saved model predictions into model_preds.txt")
 
-    def training_epoch_end(self, training_step_outputs):
-        # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
-        for train_dataloader in self.trainer.train_dataloader.loaders:
-            try:
-                train_dataloader.next()
-            except StopIteration:
-                pass
-    
-    def validation_epoch_end(self, validation_step_outputs):
-        # Manually trigger StopIteration due to ligntning module unable to reset DALI pipeline
-        for val_dataloader in self.trainer.val_dataloaders:
-            try:
-                val_dataloader.next()
-            except StopIteration:
-                pass
-
     def test_epoch_end(self, test_step_outputs):
         # 1. log metrics
         self.logger.log_hyperparams(self.hparams, self.test_hpmetrics0.compute())
@@ -165,14 +149,13 @@ class BichromDataLoaderHook(pl.LightningModule):
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
-@pl_cli.MODEL_REGISTRY
 class Bichrom(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
         print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.num_dense = num_dense
         self.conv1d_filter = conv1d_filter
         self.lstm_out = lstm_out
@@ -234,15 +217,14 @@ class bpnet_dilation(nn.Module):
         conv_x = self.relu(conv_x)
         return torch.add(x, conv_x)
 
-@pl_cli.MODEL_REGISTRY
 class BichromConvDilated(BichromDataLoaderHook):
     """
     Use dilated convolutional layer instead of LSTM in model body
     This one follows the BPnet design style, which means dilation_rate increase exponentially by layer
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
         print(f"BE ADVISED: You are using Dilated model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.conv1d_filter = conv1d_filter
         self.num_dilated = num_dilated
         self.chroms_channel = chroms_channel
@@ -283,15 +265,14 @@ class BichromConvDilated(BichromDataLoaderHook):
 
         return y_hat
 
-@pl_cli.MODEL_REGISTRY
 class BichromConvFullDilated(BichromDataLoaderHook):
     """
     Use dilated convolutional layer instead of LSTM in model body
     This one follows the BPnet design style, which means dilation_rate increase exponentially by layer
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, num_dilated=9, seqonly=False):
         print(f"BE ADVISED: You are using Full Receptive field Dilated model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.conv1d_filter = conv1d_filter
         self.num_dilated = num_dilated
         self.chroms_channel = chroms_channel
@@ -325,14 +306,13 @@ class BichromConvFullDilated(BichromDataLoaderHook):
 
         return y_hat
 
-@pl_cli.MODEL_REGISTRY
 class BichromNoLSTM(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=1, num_dense=1, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=1, num_dense=1, seqonly=False):
         print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.num_conv = num_conv
         self.num_dense = num_dense
         self.conv1d_filter = conv1d_filter
@@ -386,14 +366,13 @@ class BichromNoLSTM(BichromDataLoaderHook):
 
         return y_hat
 
-@pl_cli.MODEL_REGISTRY
 class ConvRepeat(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=4, num_dense=3, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, dense_aug_feature=512, num_conv=4, num_dense=3, seqonly=False):
         print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.num_conv = num_conv
         self.num_dense = num_dense
         self.conv1d_filter = conv1d_filter
@@ -449,14 +428,13 @@ class ConvRepeat(BichromDataLoaderHook):
 
         return y_hat
 
-@pl_cli.MODEL_REGISTRY
 class LSTMRepeat(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
     """
-    def __init__(self, data_config, batch_size=512, chroms_channel=12, conv1d_filter=256, num_lstm=1, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
+    def __init__(self, chroms_channel=12, conv1d_filter=256, num_lstm=1, lstm_out=32, dense_aug_feature=512, num_dense=1, seqonly=False):
         print(f"BE ADVISED: You are using Bichrom model in {'Seq-only' if seqonly else 'Seq + Chrom'} mode...")
-        super().__init__(data_config, batch_size)
+        super().__init__(chroms_channel)
         self.num_dense = num_dense
         self.conv1d_filter = conv1d_filter
         self.num_lstm = num_lstm
@@ -510,7 +488,15 @@ class MyLightningCLI(LightningCLI):
         parser.add_optimizer_args(torch.optim.Adam)
 
 def main():
-    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,save_config_overwrite=True)
+    cli = MyLightningCLI(datamodule_class=SeqChromDataModule,
+                        seed_everything_default=32,
+                        save_config_overwrite=True,
+                        trainer_defaults={
+                            "callbacks": [
+                                ModelCheckpoint(filename="checkpoint_{epoch}-{val_loss:.6f}", monitor='val_loss', save_last=False, save_top_k=1, mode='min', every_n_epochs=1),
+                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=10),
+                                ModelSummary(max_depth=-1)]
+                        })
 
 if __name__ == "__main__":
     main()

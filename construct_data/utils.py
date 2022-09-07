@@ -18,7 +18,7 @@ import pyBigWig
 from pybedtools import Interval, BedTool
 from sklearn.preprocessing import StandardScaler
 
-import tensorflow as tf
+import webdataset as wds
 
 def filter_chromosomes(input_df, to_filter=None, to_keep=None):
     """
@@ -280,7 +280,7 @@ def get_data(coords, genome_fasta, chromatin_tracks, nbins, reverse=False, numPr
 
     return X_seq, chromatin_out_lists, y
 
-def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, numProcessors=1, chroms_scaler=None):
+def get_data_webdataset(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, outprefix, reverse=False, compress=False, numProcessors=1, chroms_scaler=None):
     """
     Given coordinates dataframe, extract the sequence and chromatin signal,
     Then save in **TFReocrd** format
@@ -293,13 +293,13 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
     # freeze the common parameters
     ## create a scaler to get statistics for normalizing chromatin marks input
     ## also create a multiprocessing lock
-    get_data_TFRecord_worker_freeze = functools.partial(get_data_TFRecord_worker, 
+    get_data_worker_freeze = functools.partial(get_data_webdataset_worker, 
                                                     fasta=genome_fasta, nbins=nbins, 
                                                     bigwig_files=chromatin_tracks, tf_bam=tf_bam,
-                                                    reverse=reverse)
+                                                    reverse=reverse, compress=compress)
 
     pool = Pool(numProcessors)
-    res = pool.starmap_async(get_data_TFRecord_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
+    res = pool.starmap_async(get_data_worker_freeze, zip(chunks, [outprefix + "_" + str(i) for i in range(num_chunks)]))
     res = res.get()
 
     # fit the scaler if provided
@@ -310,6 +310,59 @@ def get_data_TFRecord(coords, genome_fasta, chromatin_tracks, tf_bam, nbins, out
         files.append(file)
 
     return files
+
+def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False, compress=False):
+    # get handlers
+    genome_pyfasta = pyfasta.Fasta(fasta)
+    bigwigs = [pyBigWig.open(bw) for bw in bigwig_files]
+    tfbam = pysam.AlignmentFile(tf_bam)
+
+    # iterate all records
+    filename = f"{outprefix}.tar.gz" if compress else f"{outprefix}.tar"
+    sink = wds.TarWriter(filename, compress=compress)
+    mss = []
+    for item in coords.itertuples():
+        feature_dict = defaultdict()
+        feature_dict["__key__"] = f"{item.chrom}:{item.start}-{item.end}" 
+
+        # seq
+        seq = genome_pyfasta[item.chrom][int(item.start):int(item.end)]
+        if reverse:
+            seq = rev_comp(seq)
+        seq_array = dna2onehot(seq)
+        feature_dict["seq.npy"] = seq_array
+
+        #chromatin track
+        ms = []
+        try:
+            for idx, bigwig in enumerate(bigwigs):
+                m = (np.nan_to_num(bigwig.values(item.chrom, item.start, item.end))
+                                        .reshape((nbins, -1))
+                                        .mean(axis=1, dtype=np.float32))
+                if reverse:
+                    m = m[::-1] 
+                ms.append(m)
+        except RuntimeError as e:
+            logging.warning(e)
+            logging.warning(f"Chromatin track {bigwig_files[idx]} doesn't have information in {item} Skip this region...")
+            continue
+        ms = np.vstack(ms)  # create the chromatin track array, shape (num_tracks, length)
+        feature_dict["chrom.npy"] = ms
+        mss.append(ms)
+        # label
+        feature_dict["label.npy"] = np.array(item.label, dtype=np.int32)[np.newaxis]
+        # counts
+        target = tfbam.count(item.chrom, item.start, item.end)
+        feature_dict["target.npy"] = np.array(target, dtype=np.float32)[np.newaxis]
+
+        sink.write(feature_dict)
+
+    sink.close()
+    for bw in bigwigs: bw.close()
+
+    mss = np.hstack(mss).T
+
+    return filename, mss
 
 def get_data_TFRecord_worker(coords, outprefix, fasta, bigwig_files, tf_bam, nbins, reverse=False):
 
