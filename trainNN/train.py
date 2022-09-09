@@ -1,5 +1,5 @@
 
-import os
+import os, sys
 import yaml
 from collections import OrderedDict
 
@@ -114,6 +114,13 @@ class BichromDataLoaderHook(pl.LightningModule):
         if self.global_rank == 0:
             np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
         print(f"Saved model predictions into model_preds.txt")
+    
+    def on_test_epoch_start(self):
+        # ensure world size is 1
+        if self.trainer.world_size != 1:
+            print(f"World size is {self.trainer.world_size}")
+            print(f"Please set # of devices as 1, distributed strategy on multiple devices could lead to incorrect prediction tensor shape")
+            sys.exit(1)
 
     def test_epoch_end(self, test_step_outputs):
         # 1. log metrics
@@ -131,9 +138,9 @@ class BichromDataLoaderHook(pl.LightningModule):
             out_labels.append(outs['label'])
         
         # gather from ddp processes
-        out_preds = self.all_gather(torch.stack(out_preds))
-        out_trues = self.all_gather(torch.stack(out_trues))
-        out_labels = self.all_gather(torch.stack(out_labels))
+        out_preds = torch.cat(out_preds, 0)
+        out_trues = torch.cat(out_trues, 0)
+        out_labels = torch.cat(out_labels, 0)
 
         # plot figure in the main process
         if self.local_rank == 0: 
