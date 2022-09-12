@@ -46,6 +46,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         self.chroms_channel = chroms_channel
 
         self.metrics = MetricCollection([MeanSquaredError(), PearsonCorrCoef()])
+        self.test_hpmetricsall = self.metrics.clone(prefix="hp/test_all_")
         self.test_hpmetrics0 = self.metrics.clone(prefix="hp/test_label0_")
         self.test_hpmetrics1 = self.metrics.clone(prefix="hp/test_label1_")
 
@@ -59,7 +60,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
     # Using custom or multiple metrics (default_hp_metric=False)
     def on_test_start(self):
-        self.logger.log_hyperparams(self.hparams, {i:0 for i in list(self.test_hpmetrics0.keys()) + list(self.test_hpmetrics1.keys())})
+        self.logger.log_hyperparams(self.hparams, {i:0 for i in list(self.test_hpmetricsall.keys()) + list(self.test_hpmetrics0.keys()) + list(self.test_hpmetrics1.keys())})
 
     def training_step(self, batch, batch_idx):
         # define train loop
@@ -90,6 +91,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         test_loss = F.mse_loss(y_hat, y)
 
         # compute metrics
+        self.test_hpmetricsall(y_hat, y)
         if (label==0).sum()>1: self.test_hpmetrics0(y_hat[label==0], y[label==0])
         if (label==1).sum()>1: self.test_hpmetrics1(y_hat[label==1], y[label==1])
 
@@ -124,6 +126,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
     def test_epoch_end(self, test_step_outputs):
         # 1. log metrics
+        self.logger.log_hyperparams(self.hparams, self.test_hpmetricsall.compute())
         self.logger.log_hyperparams(self.hparams, self.test_hpmetrics0.compute())
         self.logger.log_hyperparams(self.hparams, self.test_hpmetrics1.compute())
 
@@ -148,11 +151,24 @@ class BichromDataLoaderHook(pl.LightningModule):
             out_trues = out_trues.detach().cpu().numpy().flatten()
             out_labels = out_labels.detach().cpu().numpy().flatten()
 
+            ## scatterplot on all test data
+            fig = plt.figure(figsize=(12, 12))
+            ax = sns.scatterplot(x=out_preds, y=out_trues)
+            ax.set_xlim(left=0, right=12)
+            ax.set_ylim(bottom=0, top=12)
+            ax.set_xlabel("Predictions by Model")
+            ax.set_ylabel("True target")
+            ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds, out_trues)}", transform=plt.gca().transAxes)
+            self.logger.experiment.add_figure(f"Prediction vs True on whole test dataset", fig)
+
+            ## scatterplot on labeled test data
             for l in [0, 1]:
                 fig = plt.figure(figsize=(12, 12))
                 ax = sns.scatterplot(x=out_preds[out_labels==l], y=out_trues[out_labels==l])
-                ax.set_xlim(left=0, right=8)
+                ax.set_xlim(left=0, right=12)
                 ax.set_ylim(bottom=0, top=12)
+                ax.set_xlabel("Predictions by Model")
+                ax.set_ylabel("True target")
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
