@@ -69,6 +69,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         # compute prediction and loss
         loss = F.mse_loss(y_hat, y)
+
         self.log('train_loss', loss)
         return {'loss': loss}
 
@@ -102,28 +103,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         y_hat = self(seq, chroms)
 
         return y_hat
-
-    def on_predict_epoch_end(self, predict_step_outputs):
-        # collect outputs from each batch
-        out_preds = []
-        for outs in predict_step_outputs[0]: 
-            out_preds.append(outs)
-        
-        # gather from ddp processes
-        out_preds = self.all_gather(torch.cat(out_preds))
-
-        # save
-        if self.global_rank == 0:
-            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
-        print(f"Saved model predictions into model_preds.txt")
     
-    def on_test_epoch_start(self):
-        # ensure world size is 1
-        if self.trainer.world_size != 1:
-            print(f"World size is {self.trainer.world_size}")
-            print(f"Please set # of devices as 1, distributed strategy on multiple devices could lead to incorrect prediction tensor shape")
-            sys.exit(1)
-
     def test_epoch_end(self, test_step_outputs):
         # 1. log metrics
         self.logger.log_hyperparams(self.hparams, self.test_hpmetricsall.compute())
@@ -172,6 +152,32 @@ class BichromDataLoaderHook(pl.LightningModule):
                 ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
+    def on_train_epoch_end(self):
+        # logging histograms
+        for name, params in self.named_parameters():
+            self.logger.experiment.add_histogram(name, params, self.current_epoch)
+
+    def on_test_epoch_start(self):
+        # ensure world size is 1
+        if self.trainer.world_size != 1:
+            print(f"World size is {self.trainer.world_size}")
+            print(f"Please set # of devices as 1, distributed strategy on multiple devices could lead to incorrect prediction tensor shape")
+            sys.exit(1)
+
+    def on_predict_epoch_end(self, predict_step_outputs):
+        # collect outputs from each batch
+        out_preds = []
+        for outs in predict_step_outputs[0]: 
+            out_preds.append(outs)
+        
+        # gather from ddp processes
+        out_preds = self.all_gather(torch.cat(out_preds))
+
+        # save
+        if self.global_rank == 0:
+            np.savetxt(os.path.join(self.logger.log_dir, "model_preds.txt"), out_preds.cpu().numpy().flatten(), fmt="%.6f")
+        print(f"Saved model predictions into model_preds.txt")
+    
 class Bichrom(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
