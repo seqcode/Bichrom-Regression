@@ -522,7 +522,12 @@ def main():
                         save_config_overwrite=True,
                         trainer_defaults={
                             "callbacks": [
-                                ModelCheckpoint(filename="checkpoint_{epoch}-{val_loss:.6f}", monitor='val_loss', save_last=False, save_top_k=1, mode='min', every_n_epochs=1),
+                                ModelCheckpoint(filename="checkpoint_{epoch}-{val_loss:.6f}", 
+                                                monitor='val_loss', 
+                                                save_last=True, 
+                                                save_top_k=1, 
+                                                mode='min', 
+                                                every_n_epochs=1),
                                 EarlyStopping(monitor='val_loss', min_delta=0.01, patience=10),
                                 ModelSummary(max_depth=-1)]
                         })
