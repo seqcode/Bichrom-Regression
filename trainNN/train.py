@@ -546,7 +546,8 @@ class LSTMRepeat(BichromDataLoaderHook):
 
 class MyLightningCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
-        parser.add_optimizer_args(torch.optim.Adam)
+        parser.add_optimizer_args(torch.optim.AdamW)
+        parser.add_lr_scheduler_args(torch.optim.lr_scheduler.ExponentialLR)
 
 def main():
     cli = MyLightningCLI(datamodule_class=SeqChromDataModule,
