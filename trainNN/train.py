@@ -96,6 +96,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         if (label==0).sum()>1: self.test_hpmetrics0(y_hat[label==0], y[label==0])
         if (label==1).sum()>1: self.test_hpmetrics1(y_hat[label==1], y[label==1])
 
+        self.log('test_loss', test_loss)
         return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
     
     def predict_step(self, batch, batch_idx):
@@ -457,6 +458,37 @@ class ConvRepeat(BichromDataLoaderHook):
 
         return y_hat
 
+class ConvRepeatVGGLike(ConvRepeat):
+    def __init__(self, chroms_channel=12, conv1d_filter=64, conv1d_filter_width=3,dense_aug_feature=512, num_dense=3, seqonly=False):
+        super().__init__(chroms_channel, conv1d_filter, dense_aug_feature, 3, num_dense, seqonly)
+        self.conv1d_filter_width = conv1d_filter_width
+
+        self.model_foot = nn.Sequential(OrderedDict([
+            ('conv1', nn.Conv1d(4 if self.seqonly else 4 + self.chroms_channel, self.conv1d_filter, 25, padding=12, bias=False)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm1', nn.BatchNorm1d(self.conv1d_filter))
+            ]))
+
+        conv_repeat_dict = OrderedDict([])
+        for i in range(1, 5):
+            conv_repeat_dict[f"conv_repeat_p{i}_reduce"] = nn.Sequential(OrderedDict([
+                                                                    (f'conv1d_repeat_{i}', nn.Conv1d(self.conv1d_filter*i, self.conv1d_filter*(i+1), self.conv1d_filter_width, stride=2, padding=int((self.conv1d_filter_width-1)/2), bias=False)),
+                                                                    (f'relu_repeat_{i}', nn.LeakyReLU()),
+                                                                    (f'batchnorm_repeat_{i}', nn.BatchNorm1d(self.conv1d_filter*(i+1)))
+                                                                    ]))
+        self.model_conv_repeat = nn.Sequential(conv_repeat_dict)
+        self.model_body = nn.Sequential(OrderedDict([
+            ('conv1d_reduce', nn.Conv1d(self.conv1d_filter*5, 1, 1, bias=False)),
+            ('squeeze', squeeze()),
+            ('dense_aug', nn.Linear(32, self.dense_aug_feature)),
+            ('relu1', nn.LeakyReLU()),
+            ('batchnorm', nn.BatchNorm1d(self.dense_aug_feature))
+            ]))
+        self.model_head = nn.Sequential(OrderedDict([
+            ('linear_head', nn.Linear(self.dense_aug_feature, 1)),
+            ('relu_head', nn.LeakyReLU())
+            ]))
+            
 class LSTMRepeat(BichromDataLoaderHook):
     """
     Early integration of sequence and chromatin info
