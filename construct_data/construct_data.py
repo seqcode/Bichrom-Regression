@@ -275,28 +275,36 @@ def main():
                                     compress=args.compress)
 
     print('Constructing validation data ...')
-    wds_val, val_coords_bed = construct_test_set(genome_sizes_file=args.info,
-                        peaks_file=args.peaks,
-                        genome_fasta_file=args.fa,
-                        blacklist_file=args.blacklist, window_length=args.len,
-                        stride=args.len,
-                        to_keep=args.val_chroms,
-                        out_prefix=args.outdir + '/data_val',
-                        chromatin_track_list=args.chromtracks, 
-                        tf_bam=args.tfbam,
-                        nbins=args.len, p=args.p, compress=args.compress)
+    wds_val_seq, wds_val_bichrom, val_coords_seq_bed, val_coords_bichrom_bed, val_chroms_scaler = construct_training_set(genome_sizes_file=args.info, 
+                                    genome_fasta_file=args.fa,
+                                    peaks_file=args.peaks,
+                                    blacklist_file=args.blacklist, window_length=args.len,
+                                    acc_regions_file=args.acc_domains,
+                                    to_filter=None,
+                                    to_keep=args.val_chroms,
+                                    out_prefix=args.outdir + '/data_val',
+                                    chromatin_track_list=args.chromtracks,
+                                    tf_bam=args.tfbam,
+                                    nbins=args.len, 
+                                    augment_factor=args.augment,
+                                    p=args.p,
+                                    compress=args.compress)
 
     print('Constructing test data ...')
-    wds_test, test_coords_bed = construct_test_set(genome_sizes_file=args.info,
-                        peaks_file=args.peaks,
-                        genome_fasta_file=args.fa,
-                        blacklist_file=args.blacklist, window_length=args.len,
-                        stride=args.len,
-                        to_keep=args.test_chroms,
-                        out_prefix=args.outdir + '/data_test',
-                        chromatin_track_list=args.chromtracks, 
-                        tf_bam=args.tfbam,
-                        nbins=args.len, p=args.p, compress=args.compress)
+    wds_test_seq, wds_test_bichrom, test_coords_seq_bed, test_coords_bichrom_bed, test_chroms_scaler = construct_training_set(genome_sizes_file=args.info, 
+                                    genome_fasta_file=args.fa,
+                                    peaks_file=args.peaks,
+                                    blacklist_file=args.blacklist, window_length=args.len,
+                                    acc_regions_file=args.acc_domains,
+                                    to_filter=None,
+                                    to_keep=args.test_chroms,
+                                    out_prefix=args.outdir + '/data_test',
+                                    chromatin_track_list=args.chromtracks,
+                                    tf_bam=args.tfbam,
+                                    nbins=args.len, 
+                                    augment_factor=args.augment,
+                                    p=args.p,
+                                    compress=args.compress)
 
     # Produce a default yaml file recording the output
     yml_training_schema = {'params': {
@@ -315,12 +323,12 @@ def main():
                                      'webdataset': wds_train_bichrom
                                     },
                            'val':   {
-                                     'bed': val_coords_bed,
-                                     'webdataset': wds_val
+                                     'bed': val_coords_bichrom_bed,
+                                     'webdataset': wds_val_bichrom
                                     },
                            'test':  {
-                                     'bed': test_coords_bed,
-                                     'webdataset': wds_test
+                                     'bed': test_coords_bichrom_bed,
+                                     'webdataset': wds_test_bichrom
                                     }}
 
     # Note: The x.split('/')[-1].split('.')[0] accounts for input chromatin bigwig files with
