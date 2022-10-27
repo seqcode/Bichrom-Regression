@@ -56,7 +56,7 @@ class SeqChromDataset(Dataset):
         self.scaler_var = config["params"]["scaler_var"]
     
     def initialize(self):
-        self.genome_pyfasta = pyfasta.Fasta(self.config["train_bichrom"]["fasta"])
+        self.genome_pyfasta = pyfasta.Fasta(self.config["params"]["fasta"])
         #self.tfbam = pysam.AlignmentFile(self.config["train_bichrom"]["tf_bam"])
         self.bigwigs = [pyBigWig.open(bw) for bw in self.bigwig_files]
     
