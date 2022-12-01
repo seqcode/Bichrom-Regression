@@ -566,7 +566,7 @@ def main():
                                                 save_top_k=1, 
                                                 mode='min', 
                                                 every_n_epochs=1),
-                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=10),
+                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=20),
                                 ModelSummary(max_depth=-1)]
                         })
 
