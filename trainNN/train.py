@@ -4,6 +4,7 @@ import yaml
 from collections import OrderedDict
 
 import numpy as np
+import pandas as pd
 from scipy.stats import pearsonr
 
 import torch
@@ -80,7 +81,7 @@ class BichromDataLoaderHook(pl.LightningModule):
 
         # compute prediction and loss
         val_loss = F.mse_loss(y_hat, y)
-        self.log('val_loss', val_loss)
+        self.log('val_loss', val_loss, sync_dist=True)
         return {'val_loss': val_loss, 'pred': y_hat, 'true': y}
 
     def test_step(self, batch, batch_idx):
@@ -96,7 +97,7 @@ class BichromDataLoaderHook(pl.LightningModule):
         if (label==0).sum()>1: self.test_hpmetrics0(y_hat[label==0], y[label==0])
         if (label==1).sum()>1: self.test_hpmetrics1(y_hat[label==1], y[label==1])
 
-        self.log('test_loss', test_loss)
+        self.log('test_loss', test_loss, sync_dist=True)
         return {'test_loss': test_loss, 'pred': y_hat, 'true': y, 'label': label}
     
     def predict_step(self, batch, batch_idx):
@@ -121,7 +122,6 @@ class BichromDataLoaderHook(pl.LightningModule):
             out_trues.append(outs['true'])
             out_labels.append(outs['label'])
         
-        # gather from ddp processes
         out_preds = torch.cat(out_preds, 0)
         out_trues = torch.cat(out_trues, 0)
         out_labels = torch.cat(out_labels, 0)
@@ -131,6 +131,11 @@ class BichromDataLoaderHook(pl.LightningModule):
             out_preds = out_preds.detach().cpu().numpy().flatten()
             out_trues = out_trues.detach().cpu().numpy().flatten()
             out_labels = out_labels.detach().cpu().numpy().flatten()
+
+            df = pd.DataFrame({'predictions': out_preds,
+                                'true_target': out_trues,
+                                'label': out_labels})
+            df.to_csv(os.path.join(self.logger.log_dir, "model_preds_vs_true.txt"), header=True, index=False, sep="\t")
 
             ## scatterplot on all test data
             fig = plt.figure(figsize=(12, 12))
