@@ -133,13 +133,14 @@ def _target_vlog(sample):
 target_vlog = wds.pipelinefilter(_target_vlog)
 
 class SeqChromDataModule(pl.LightningDataModule):
-    def __init__(self, data_config, pred_bed, dataset_train="train_bichrom", num_workers=8, batch_size=512):
+    def __init__(self, data_config, pred_bed, dataset_train="train_bichrom", num_workers=8, batch_size=512, seed=1):
         super().__init__()
         self.config = yaml.safe_load(open(data_config, 'r'))
         self.pred_bed = pred_bed
         self.dataset_train = dataset_train
         self.num_workers = num_workers
         self.batch_size = batch_size
+        self.seed = seed
         self.scaler_mean = np.array(self.config["params"]["scaler_mean"], dtype=float).reshape(-1, 1)
         self.scaler_std = np.sqrt(np.array(self.config["params"]["scaler_var"], dtype=float).reshape(-1, 1))
 
@@ -171,11 +172,11 @@ class SeqChromDataModule(pl.LightningDataModule):
 
             self.train_loader = wds.DataPipeline(
                 wds.SimpleShardList(self.config[self.dataset_train]["webdataset"]),
-                wds.shuffle(100, rng=random.Random(1)),
+                wds.shuffle(100, rng=random.Random(self.seed)),
                 split_by_node(global_rank, world_size),
                 wds.split_by_worker,
                 wds.tarfile_to_samples(),
-                wds.shuffle(1000, rng=random.Random(1)),
+                wds.shuffle(1000, rng=random.Random(self.seed)),
                 wds.decode(),
                 wds.to_tuple("seq.npy", "chrom.npy", "target.npy", "label.npy"),
                 wds.map(scale_chrom(self.scaler_mean, self.scaler_std)),
