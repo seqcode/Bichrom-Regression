@@ -323,7 +323,7 @@ def get_data_webdataset_worker(coords, outprefix, fasta, bigwig_files, tf_bam, n
     mss = []
     for item in coords.itertuples():
         feature_dict = defaultdict()
-        feature_dict["__key__"] = f"{item.chrom}:{item.start}-{item.end}" 
+        feature_dict["__key__"] = f"{item.Index}_{item.chrom}:{item.start}-{item.end}" 
 
         # seq
         seq = genome_pyfasta[item.chrom][int(item.start):int(item.end)]
