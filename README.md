@@ -4,7 +4,7 @@ Bichrom provides a framework for modeling, interpreting, and visualizing the joi
 
 **Bichrom-Regression borrowed the project framework from original Bichrom, but working towards a diffferent direction, the purpose is to predict TF binding strength (aka. read counts).**
 
-> **This is still work in progress**
+> **This work is still under construction**
 
 ## Citation
 Srivastava, D., Aydin, B., Mazzoni, E.O. et al. An interpretable bimodal neural network characterizes the sequence and preexisting chromatin predictors of induced transcription factor binding. Genome Biol 22, 20 (2021). 
