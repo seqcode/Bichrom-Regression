@@ -45,7 +45,7 @@ class DNA2OneHot(object):
         return seqMatrix
 
 class SeqChromDataset(Dataset):
-    def __init__(self, bed, config=None, seq_transform=DNA2OneHot()):
+    def __init__(self, bed, config=None, seq_transform=DNA2OneHot(), include_idx=False):
         self.bed = pd.read_table(bed, header=None, names=['chrom', 'start', 'end', 'name', 'score', 'strand' ])
 
         self.config = config
@@ -54,6 +54,8 @@ class SeqChromDataset(Dataset):
         self.bigwig_files = config["params"]["chromatin_tracks"]
         self.scaler_mean = config["params"]["scaler_mean"]
         self.scaler_var = config["params"]["scaler_var"]
+        
+        self.include_idx = include_idx
     
     def initialize(self):
         self.genome_pyfasta = pyfasta.Fasta(self.config["params"]["fasta"])
@@ -86,7 +88,10 @@ class SeqChromDataset(Dataset):
         ## target: read count in region
         #target = self.tfbam.count(entry.chrom, entry.start, entry.end)
 
-        return seq, ms
+        if self.include_idx:
+            return f"{entry.chrom}:{entry.start}-{entry.end}", seq, ms
+        else:
+            return seq, ms
 
     def rev_comp(self, inp_str):
         rc_dict = {'A': 'T', 'G': 'C', 'T': 'A', 'C': 'G', 'c': 'g',

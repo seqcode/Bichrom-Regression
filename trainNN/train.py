@@ -139,12 +139,12 @@ class BichromDataLoaderHook(pl.LightningModule):
 
             ## scatterplot on all test data
             fig = plt.figure(figsize=(12, 12))
-            ax = sns.scatterplot(x=out_preds, y=out_trues)
+            ax = sns.scatterplot(x=out_preds, y=out_trues, alpha=0.2)
             ax.set_xlim(left=0, right=12)
             ax.set_ylim(bottom=0, top=12)
             ax.set_xlabel("Predictions by Model")
             ax.set_ylabel("True target")
-            ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds, out_trues)}", transform=plt.gca().transAxes)
+            ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds, out_trues)[0]:.2f}", transform=plt.gca().transAxes, size='large')
             self.logger.experiment.add_figure(f"Prediction vs True on whole test dataset", fig)
 
             ## scatterplot on labeled test data
@@ -155,7 +155,7 @@ class BichromDataLoaderHook(pl.LightningModule):
                 ax.set_ylim(bottom=0, top=12)
                 ax.set_xlabel("Predictions by Model")
                 ax.set_ylabel("True target")
-                ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])}", transform=plt.gca().transAxes)
+                ax.text(0.1, 0.8, f"pearsonr correlation efficient/p-value \n{pearsonr(out_preds[out_labels==l], out_trues[out_labels==l])[0]:.2f}", transform=plt.gca().transAxes, size='large')
                 self.logger.experiment.add_figure(f"Prediction vs True on test dataset with label {l}", fig)
 
     def on_train_epoch_end(self):
@@ -566,7 +566,7 @@ def main():
                                                 save_top_k=1, 
                                                 mode='min', 
                                                 every_n_epochs=1),
-                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=20),
+                                EarlyStopping(monitor='val_loss', min_delta=0.01, patience=10),
                                 ModelSummary(max_depth=-1)]
                         })
 
